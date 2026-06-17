@@ -12,17 +12,19 @@
 #   --approve     add <name> to the allowlist, then launch
 #   --allow-dup   if cc-<name> already exists, start a suffixed session instead of exiting
 #
-# A session always launches in $WORKDIR/<name> (WORKDIR default /workspace); the
-# allowlist is purely the set of approved NAMES, never a path. If that dir is missing
-# and GIT_BASE is set, it is cloned from $GIT_BASE/<name>.git (with GIT_USER:GIT_TOKEN
-# basic auth if GIT_TOKEN is set) - any git host works, nothing forge-specific is baked
-# in. With GIT_BASE unset, the dir must already exist (e.g. mounted).
+# A session launches in $WORKDIR/<name> (WORKDIR default /workspace), except that
+# forge-org repos launch in $FORGE_WORKDIR/<name> (FORGE_WORKDIR defaults to $WORKDIR,
+# so unset this is the same path); the allowlist is purely the set of approved NAMES,
+# never a path. If that dir is missing and GIT_BASE is set, it is cloned from
+# $GIT_BASE/<name>.git (with GIT_USER:GIT_TOKEN basic auth if GIT_TOKEN is set) - any
+# git host works, nothing forge-specific is baked in. With GIT_BASE unset, the dir must
+# already exist (e.g. mounted).
 #
 # An allowlisted dir is auto-trusted on first launch (the allowlist is the trust
 # boundary), so the headless trust dialog never needs answering by hand.
 #
-# Config via env (all optional): WORKDIR, GIT_BASE, GIT_TOKEN, GIT_USER (default git),
-# WEB_NAME_FORMAT (default "{repo}"), PERMISSION_MODE (default acceptEdits),
+# Config via env (all optional): WORKDIR, FORGE_WORKDIR, GIT_BASE, GIT_TOKEN, GIT_USER
+# (default git), WEB_NAME_FORMAT (default "{repo}"), PERMISSION_MODE (default acceptEdits),
 # CC_LAUNCHER_CONFIG (allowlist path).
 #
 # Exit codes: 0 ok / already-live, 2 bad usage, 3 rejected (not allowlisted / invalid
@@ -42,6 +44,7 @@ GIT_TOKEN="${GIT_TOKEN:-${FORGE_TOKEN:-}}"  # falls back to the Forgejo token
 GIT_USER="${GIT_USER:-git}"               # basic-auth username paired with GIT_TOKEN
 SPAWN_MODE="session"                      # classic single-session: one tmux = one chat
 PERMISSION_MODE="${PERMISSION_MODE:-acceptEdits}"
+FORGE_WORKDIR="${FORGE_WORKDIR:-$WORKDIR}"   # where forge-org repos launch; default = $WORKDIR (no-op)
 # Display name in claude.ai/code; {repo} is replaced with the name. The tmux session
 # stays cc-<name> regardless (tooling keys off that). Default: "<WEB_NAME_PREFIX> {repo}"
 # (same prefix cc-control uses), or just "{repo}" with no prefix; WEB_NAME_FORMAT overrides.
@@ -104,9 +107,33 @@ maybe_autoclone() {
   fi
 }
 
-# Path a name launches in: $WORKDIR/<name>. Used by --approve, the rejection message,
-# and the launch, so the path is computed in exactly one place.
-repo_path_for() { printf '%s/%s' "${WORKDIR%/}" "$1"; }
+# Path a name launches in.
+#  - Forge-org repos (the launcher's GIT_BASE is the forge org) launch in
+#    $FORGE_WORKDIR/<name>. FORGE_WORKDIR defaults to $WORKDIR, so unless an
+#    operator points it elsewhere this is byte-for-byte the old behaviour - the
+#    public default is unchanged. Pointing FORGE_WORKDIR at a canonical clones
+#    dir (e.g. one a SessionStart hook also manages) keeps org repos in one place
+#    instead of a duplicate under $WORKDIR.
+#  - An existing checkout wins over a fresh clone: a canonical clone at
+#    $FORGE_WORKDIR/<name> is used if present; failing that a pre-existing
+#    $WORKDIR/<name> (a mount, or a legacy clone) is respected so it is never
+#    orphaned. Only a genuinely fresh forge-org repo clones to $FORGE_WORKDIR.
+#  - Everything else launches in $WORKDIR/<name>, exactly as before.
+repo_path_for() {
+  local name="$1"
+  if [ -n "${FORGE_HOST:-}" ] && [ -n "${FORGE_ORG:-}" ] && \
+     [ "${GIT_BASE%/}" = "${FORGE_HOST%/}/${FORGE_ORG}" ]; then
+    if [ -d "${FORGE_WORKDIR%/}/$name/.git" ]; then
+      printf '%s/%s' "${FORGE_WORKDIR%/}" "$name"
+    elif [ -d "${WORKDIR%/}/$name" ]; then
+      printf '%s/%s' "${WORKDIR%/}" "$name"
+    else
+      printf '%s/%s' "${FORGE_WORKDIR%/}" "$name"
+    fi
+  else
+    printf '%s/%s' "${WORKDIR%/}" "$name"
+  fi
+}
 
 # Claude Code pins a working dir's web session id in
 # ~/.claude/projects/<dir-slug>/bridge-pointer.json and REUSES it on the next launch in
@@ -160,8 +187,8 @@ if [ "$approve" -eq 1 ]; then
 fi
 
 # --- check the allowlist (membership only) ---------------------------------
-# The allowlist is just the set of approved NAMES. The working dir is ALWAYS
-# $WORKDIR/<name> (computed below), never a path from the file.
+# The allowlist is just the set of approved NAMES. The working dir is computed by
+# repo_path_for() (below), never a path from the file.
 [ -f "$CONFIG" ] || die "allowlist not found: $CONFIG (create it, or use --approve <name>)" 3
 
 approved=0
@@ -179,7 +206,7 @@ done < "$CONFIG"
       $repo
   then re-run.  Or do it in one step:  launch_session.sh --approve $repo" 3
 
-# Sessions ALWAYS launch in $WORKDIR/<name>.
+# Sessions launch in $WORKDIR/<name>; forge-org repos may launch in $FORGE_WORKDIR/<name>.
 repo_path="$(repo_path_for "$repo")"
 [ -d "$repo_path" ] || maybe_autoclone "$repo" "$repo_path"
 [ -d "$repo_path" ] || die "rejected: '$repo' has no dir at $repo_path - mount it there, or set GIT_BASE so it can be cloned" 3

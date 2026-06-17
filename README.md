@@ -52,6 +52,7 @@ nothing set you get a plain Claude sandbox. `.env` is gitignored - keep your tok
 | `WEB_NAME_PREFIX`                                  | Label your sessions in claude.ai/code, e.g. `[Laptop]`                                          |
 | `SETUP_REPO`                                       | Clone and run your own setup repo at first-setup (dotfiles, agent-memory)                       |
 | `GIT_BASE`, `GIT_USER`, `GIT_TOKEN`                | Auto-clone from any git host (defaults to your Forgejo org)                                     |
+| `FORGE_WORKDIR`                                    | Where forge-org repos launch; defaults to `WORKDIR`                                             |
 | `WORKDIR`, `PERMISSION_MODE`, `CONTAINER_HOSTNAME` | Where sessions run, claude's permission mode, the name shown as the session origin              |
 
 See [`.env.example`](.env.example) for the full list with examples.
@@ -60,8 +61,8 @@ See [`.env.example`](.env.example) for the full list with examples.
 
 The container runs one always-on **control session** (shown as "🛠️ Control" in
 claude.ai/code). Open it from any device and ask, in plain English, to *"launch `<repo>`"*
-- it starts a fresh Claude session in `/workspace/<repo>`, cloning the repo from your
-forge if it isn't there yet.
+- it starts a fresh Claude session in `/workspace/<repo>` (forge-org repos may launch in
+`FORGE_WORKDIR` instead), cloning the repo from your forge if it isn't there yet.
 
 To stop a session, **Delete or Archive it** in claude.ai/code - the container cleans up.
 
