@@ -1,7 +1,7 @@
 # claude-container - single long-lived sandbox.
 #
 # No secrets here. After `up`, personalise + log in once:
-#   docker compose up -d --build
+#   docker compose up -d
 #   docker compose exec claude first-setup.sh
 #
 # Configure via env (ALL optional; nothing set = a plain sandbox). Put your values in a
@@ -13,8 +13,7 @@
 # End a *web* session by Delete/Archive in claude.ai/code (it tears down cleanly).
 services:
   claude:
-    build: .
-    image: claude-container:latest
+    image: alangrainger/claude-container:latest
     container_name: claude-box
     # All config is optional and comes from a gitignored .env (see .env.example).
     # No .env (or an empty one) = a plain sandbox.

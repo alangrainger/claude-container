@@ -18,8 +18,12 @@ You need Docker (e.g. [OrbStack](https://orbstack.dev) on macOS) and a Claude **
 account.
 
 ```sh
+# Grab the compose file (and the env template if you want to configure anything)
+curl -O https://raw.githubusercontent.com/alangrainger/claude-container/main/compose.yaml
+curl -O https://raw.githubusercontent.com/alangrainger/claude-container/main/.env.example
+
 cp .env.example .env             # optional: edit to add a forge, dotfiles, labels
-docker compose up -d --build     # build and start the container
+docker compose up -d             # pull the published image and start the container
 docker compose exec claude first-setup.sh
 ```
 
@@ -78,3 +82,12 @@ To stop a session, **Delete or Archive it** in claude.ai/code - the container cl
 | `bin/launch_session.sh`     | Starts (and clones) a session for a repo                        |
 | `bin/forgejo`               | The Forgejo API wrapper                                         |
 | `.github/workflows/ci.yaml` | Builds + publishes the image to GHCR on a version tag           |
+
+## Build from source
+
+The published image covers the normal case. To build it yourself instead, clone this
+repo, uncomment `build: .` (and comment out `image:`) in `compose.yaml`, then:
+
+```sh
+docker compose up -d --build
+```
