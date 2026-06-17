@@ -29,6 +29,30 @@ PERMISSION_MODE="${PERMISSION_MODE:-acceptEdits}"
 # API keys are not supported for Remote Control; never let one through.
 unset ANTHROPIC_API_KEY
 
+# ~/.claude must be writable by the container user (uid 1000 `node`), and must contain the
+# .config/.local dirs the read-only rootfs symlinks ~/.config and ~/.local into (see
+# Dockerfile). Named volumes are seeded from the image and owned correctly, so this is a
+# no-op for them. Bind mounts are NOT seeded (an empty host dir just overlays the path), so
+# recreate the dirs. Most runtimes make the mount writable by the container user
+# automatically (Docker Desktop/OrbStack map it; rootless Podman with keep-id maps your
+# user to `node`); the exception is rootful Docker, which auto-creates a missing bind dir
+# as root:root. We can't chown from in here (hardened: no caps), so if the mount is
+# unwritable, stop with a clear, runtime-specific hint rather than failing confusingly
+# later (e.g. a setup hook's mkdir ~/.config).
+mkdir -p "$CONFIG_DIR/.config" "$CONFIG_DIR/.local/bin" 2>/dev/null || true
+if ! ( : > "$CONFIG_DIR/.writable" ) 2>/dev/null; then
+  cat <<EOF
+claude-container: $CONFIG_DIR is not writable by the container user (uid 1000 'node').
+A bind mount must be writable by that user. Depending on your runtime:
+  - rootful Docker:   the dir was created root:root - 'sudo chown -R 1000:1000 <host dir>'
+  - rootless Podman:  use keep-id, e.g. compose 'userns_mode: keep-id:uid=1000,gid=1000'
+  - Docker Desktop / OrbStack: shouldn't happen - double-check the mount path exists
+Named volumes avoid this entirely. Idling so the container stays up...
+EOF
+  exec sleep infinity
+fi
+rm -f "$CONFIG_DIR/.writable"
+
 # First-setup gate: without a credential, claude cannot start. Keep the container alive
 # (so `docker compose exec` works) and print exactly what to run.
 if [ ! -s "$CRED" ]; then
