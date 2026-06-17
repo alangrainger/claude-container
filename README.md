@@ -17,6 +17,8 @@ your setup is baked into the image - it's all runtime config.
 You need Docker (e.g. [OrbStack](https://orbstack.dev) on macOS) and a Claude **Pro/Max**
 account.
 
+1. Set up the container
+
 ```sh
 # Grab the compose file (and the env template if you want to configure anything)
 curl -O https://raw.githubusercontent.com/alangrainger/claude-container/main/compose.yaml
@@ -24,15 +26,17 @@ curl -O https://raw.githubusercontent.com/alangrainger/claude-container/main/.en
 
 cp .env.example .env             # optional: edit to add a forge, dotfiles, labels
 docker compose up -d             # pull the published image and start the container
+```
+
+2. Run the initial setup.
+
+```sh
 docker compose exec claude first-setup.sh
 ```
 
-`first-setup.sh` runs any optional setup, then drops you into Claude - type **`/login`**,
-open the URL it prints, approve, paste the code back, then **`/exit`**. Finally:
+3. After you have successfully authenticated, type **`/exit`**
 
-```sh
-docker compose restart           # brings up the always-on control session
-```
+4. Restart the container and the **🛠️ Control** session should appear in https://claude.ai/code
 
 That's it. From now on the container reconnects on its own across restarts, image
 rebuilds, and host reboots - you won't log in again.
