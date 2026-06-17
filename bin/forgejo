@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# forgejo - tight wrapper for the Forgejo API for agent sessions.
+#
+# Purpose: encapsulate the handful of Forgejo operations agents actually need
+# (read / create / comment / close issues, plus a raw escape hatch) behind ONE
+# command, so a single permission rule - Bash(forgejo:*) - replaces broad,
+# any-host Bash(curl:*) / jq / tr allowlisting.
+#
+# It reads the token itself (never echoes it) and takes host/org defaults from
+# ~/.config/forgejo-claude/config (the same file the SessionStart hook uses).
+#
+# Usage:
+#   forgejo issue list    <repo> [--state open|closed|all]
+#   forgejo issue view    <repo> <n>
+#   forgejo issue create  <repo> <title> [body]
+#   forgejo issue comment <repo> <n> <body>
+#   forgejo issue close   <repo> <n>
+#   forgejo push  [-C <dir>] <repo> <message> <path>...  # commit file(s) in ONE commit
+#   forgejo api <METHOD> <path> [json]      # raw escape hatch, e.g.
+#                                           #   forgejo api GET /repos/your-org/foo
+#   forgejo --help
+#
+# <repo> is either a bare name (org defaults to FORGE_ORG) or "org/repo".
+
+set -euo pipefail
+
+# --- Config: env-primary (the opinionated interface), config-file fallback ----
+# Targets Forgejo; Gitea's API is compatible so it likely works, but only Forgejo is
+# a support goal. Set FORGE_HOST / FORGE_ORG / FORGE_TOKEN (env), or provide a config
+# file. Nothing host-specific is hardcoded.
+CONFIG="${FORGEJO_CLAUDE_CONFIG:-$HOME/.config/forgejo-claude/config}"
+# Capture env before sourcing any config file, so env wins over the file.
+_env_host="${FORGE_HOST:-}"; _env_org="${FORGE_ORG:-}"; _env_token="${FORGE_TOKEN:-}"
+FORGE_HOST=""; FORGE_ORG=""
+TOKEN_FILE="${TOKEN_FILE:-$HOME/.config/forgejo-claude/token}"
+API_TIMEOUT="${API_TIMEOUT:-10}"
+# Identity for commits made by `forgejo push` (the agent, never the human).
+FORGE_COMMIT_NAME="${FORGE_COMMIT_NAME:-Claude}"
+FORGE_COMMIT_EMAIL="${FORGE_COMMIT_EMAIL:-claude@example.com}"
+# shellcheck source=/dev/null
+[ -f "$CONFIG" ] && . "$CONFIG"
+[ -n "$_env_host" ]  && FORGE_HOST="$_env_host"
+[ -n "$_env_org" ]   && FORGE_ORG="$_env_org"
+[ -n "$_env_token" ] && FORGE_TOKEN="$_env_token"
+[ -n "$FORGE_HOST" ] || { printf 'forgejo: FORGE_HOST is not set (use env or %s)\n' "$CONFIG" >&2; exit 1; }
+
+prog="$(basename "$0")"
+die() { printf '%s: %s\n' "$prog" "$*" >&2; exit 1; }
+
+usage() {
+  cat >&2 <<'EOF'
+forgejo - tight wrapper for the Forgejo API (one rule: Bash(forgejo:*)).
+
+  forgejo issue list    <repo> [--state open|closed|all]
+  forgejo issue view    <repo> <n>
+  forgejo issue create  <repo> <title> [body]
+  forgejo issue comment <repo> <n> <body>
+  forgejo issue close   <repo> <n>
+  forgejo push  [-C <dir>] <repo> <message> <path>...  # commit file(s) in one commit
+  forgejo api <METHOD> <path> [json]      # raw escape hatch
+  forgejo --help
+
+<repo> is a bare name (org defaults to FORGE_ORG) or "org/repo".
+Use `forgejo push` for Forgejo commits - it works without git/keychain auth and
+needs no `git push` permission. <path>s are repo-relative; the local file is read
+from <dir>/<path> (-C defaults to cwd, like git -C). create-vs-update is detected
+automatically.
+EOF
+  exit "${1:-0}"
+}
+
+# Resolve <repo> -> "org/repo". Accepts "repo" (uses FORGE_ORG) or "org/repo".
+resolve_repo() {
+  case "$1" in
+    */*) printf '%s' "$1" ;;
+    *)   printf '%s/%s' "$FORGE_ORG" "$1" ;;
+  esac
+}
+
+# Read the token (stripped). Never printed. FORGE_TOKEN (env) wins; else TOKEN_FILE.
+read_token() {
+  if [ -n "${FORGE_TOKEN:-}" ]; then printf '%s' "$FORGE_TOKEN"; return; fi
+  [ -f "$TOKEN_FILE" ] || die "no token: set FORGE_TOKEN or create $TOKEN_FILE"
+  local t; t="$(tr -d '[:space:]' < "$TOKEN_FILE")"
+  [ -n "$t" ] || die "token file $TOKEN_FILE is empty"
+  printf '%s' "$t"
+}
+
+# _api METHOD path [json-body] -> prints response body on stdout.
+# On HTTP >= 400, prints "HTTP <code>" + body to stderr and exits non-zero.
+# The token is passed via a header from a variable, so it never hits argv in a
+# way that lands in `ps` output beyond this process, and is never echoed.
+_api() {
+  local method="$1" path="$2" body="${3:-}"
+  local url token resp code
+  token="$(read_token)"
+  case "$path" in
+    http*) url="$path" ;;
+    /*)    url="$FORGE_HOST/api/v1$path" ;;
+    *)     url="$FORGE_HOST/api/v1/$path" ;;
+  esac
+
+  local -a args=(-sS --max-time "$API_TIMEOUT" -X "$method"
+                 -H "Authorization: token $token"
+                 -H "Accept: application/json"
+                 -w $'\n%{http_code}')
+  if [ -n "$body" ]; then
+    args+=(-H "Content-Type: application/json" --data-binary "$body")
+  fi
+
+  resp="$(curl "${args[@]}" "$url")" || die "request failed: $method $url"
+  code="${resp##*$'\n'}"
+  body="${resp%$'\n'*}"
+  if [ "$code" -ge 400 ]; then
+    printf 'HTTP %s for %s %s\n' "$code" "$method" "$url" >&2
+    [ -n "$body" ] && printf '%s\n' "$body" >&2
+    exit 1
+  fi
+  printf '%s' "$body"
+}
+
+# --- issue subcommands -------------------------------------------------------
+issue_list() {
+  local repo state="open"
+  repo="$(resolve_repo "${1:?usage: forgejo issue list <repo> [--state ...]}")"; shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --state) state="${2:?--state needs a value}"; shift 2 ;;
+      --state=*) state="${1#--state=}"; shift ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  _api GET "/repos/$repo/issues?state=$state&type=issues&limit=50" \
+    | jq -r '.[] | "#\(.number)\t\(.state)\t\(.title)" +
+        (if (.labels|length) > 0 then "  [" + (.labels|map(.name)|join(", ")) + "]" else "" end)'
+}
+
+issue_view() {
+  local repo n
+  repo="$(resolve_repo "${1:?usage: forgejo issue view <repo> <n>}")"
+  n="${2:?usage: forgejo issue view <repo> <n>}"
+  _api GET "/repos/$repo/issues/$n" | jq -r '
+    "#\(.number) \(.title)",
+    "state:   \(.state)",
+    "author:  \(.user.login)",
+    "created: \(.created_at)",
+    (if (.labels|length) > 0 then "labels:  " + (.labels|map(.name)|join(", ")) else empty end),
+    "url:     \(.html_url)",
+    "",
+    (.body // "(no description)")'
+  # Comments, if any.
+  local comments
+  comments="$(_api GET "/repos/$repo/issues/$n/comments")"
+  printf '%s' "$comments" | jq -e 'length > 0' >/dev/null 2>&1 && {
+    printf '\n--- comments ---\n'
+    printf '%s' "$comments" | jq -r '.[] | "\n@\(.user.login) (\(.created_at)):\n\(.body)"'
+  }
+}
+
+issue_create() {
+  local repo title body
+  repo="$(resolve_repo "${1:?usage: forgejo issue create <repo> <title> [body]}")"
+  title="${2:?usage: forgejo issue create <repo> <title> [body]}"
+  body="${3:-}"
+  local json; json="$(jq -n --arg t "$title" --arg b "$body" '{title:$t, body:$b}')"
+  _api POST "/repos/$repo/issues" "$json" \
+    | jq -r '"created #\(.number): \(.title)\n\(.html_url)"'
+}
+
+issue_comment() {
+  local repo n body
+  repo="$(resolve_repo "${1:?usage: forgejo issue comment <repo> <n> <body>}")"
+  n="${2:?usage: forgejo issue comment <repo> <n> <body>}"
+  body="${3:?usage: forgejo issue comment <repo> <n> <body>}"
+  local json; json="$(jq -n --arg b "$body" '{body:$b}')"
+  _api POST "/repos/$repo/issues/$n/comments" "$json" \
+    | jq -r '"commented on #'"$n"':\n\(.html_url)"'
+}
+
+issue_close() {
+  local repo n
+  repo="$(resolve_repo "${1:?usage: forgejo issue close <repo> <n>}")"
+  n="${2:?usage: forgejo issue close <repo> <n>}"
+  _api PATCH "/repos/$repo/issues/$n" '{"state":"closed"}' \
+    | jq -r '"closed #\(.number): \(.title)"'
+}
+
+issue() {
+  local sub="${1:?usage: forgejo issue <list|view|create|comment|close> ...}"; shift
+  case "$sub" in
+    list)    issue_list "$@" ;;
+    view)    issue_view "$@" ;;
+    create)  issue_create "$@" ;;
+    comment) issue_comment "$@" ;;
+    close)   issue_close "$@" ;;
+    *) die "unknown issue subcommand: $sub" ;;
+  esac
+}
+
+# --- push (commit files via the batch contents API) --------------------------
+# forgejo push [-C <dir>] <repo> <message> <path>...
+# Commits one or more files to <repo> in a SINGLE commit, authored as the agent
+# identity ($FORGE_COMMIT_NAME/$FORGE_COMMIT_EMAIL). Each <path> is a repo-relative
+# path; the local file is read from <dir>/<path> (-C defaults to cwd, like git -C).
+# create-vs-update is auto-detected by probing for an existing blob. This is the
+# sanctioned way to commit to Forgejo - no git/keychain auth, no embedded token,
+# covered by the one Bash(forgejo:*) rule.
+push() {
+  local base="."
+  if [ "${1:-}" = "-C" ]; then base="${2:?-C needs a directory}"; shift 2; fi
+  local repo msg
+  repo="$(resolve_repo "${1:?usage: forgejo push [-C <dir>] <repo> <message> <path>...}")"; shift
+  msg="${1:?usage: forgejo push [-C <dir>] <repo> <message> <path>...}"; shift
+  [ $# -ge 1 ] || die "usage: forgejo push [-C <dir>] <repo> <message> <path>..."
+
+  # Build the files[] array. For each path (a repo-relative path; the local file
+  # is read from <base>/<path>, default cwd): base64 the contents (strip
+  # newlines), then probe the repo so we send "update" (with the current blob
+  # sha) or "create".
+  local files_json="[]" p content sha
+  for p in "$@"; do
+    [ -f "$base/$p" ] || die "no such file: $base/$p"
+    content="$(base64 < "$base/$p" | tr -d '\n')"
+    # _api exits non-zero in the subshell on 404; that just yields an empty sha.
+    sha="$(_api GET "/repos/$repo/contents/$p" 2>/dev/null | jq -r '.sha // empty')" || sha=""
+    files_json="$(jq -c --arg path "$p" --arg content "$content" --arg sha "$sha" '
+      . + [ (if $sha == "" then {operation:"create"} else {operation:"update", sha:$sha} end)
+            + {path:$path, content:$content} ]' <<<"$files_json")"
+  done
+
+  local body
+  body="$(jq -n --arg m "$msg" --arg n "$FORGE_COMMIT_NAME" --arg e "$FORGE_COMMIT_EMAIL" \
+              --argjson files "$files_json" \
+    '{message:$m, author:{name:$n, email:$e}, committer:{name:$n, email:$e}, files:$files}')"
+  _api POST "/repos/$repo/contents" "$body" \
+    | jq -r '"pushed to '"$repo"': \(.commit.sha[0:8]) - \(.commit.html_url // .commit.url)"'
+}
+
+# --- raw escape hatch --------------------------------------------------------
+# forgejo api <METHOD> <path> [json]  -> pretty-prints the JSON response.
+api() {
+  local method="${1:?usage: forgejo api <METHOD> <path> [json]}"
+  local path="${2:?usage: forgejo api <METHOD> <path> [json]}"
+  local body="${3:-}"
+  local out; out="$(_api "$method" "$path" "$body")"
+  # Pretty-print when the response is JSON; otherwise pass it through verbatim.
+  printf '%s' "$out" | jq . 2>/dev/null || printf '%s\n' "$out"
+}
+
+# --- dispatch ----------------------------------------------------------------
+[ $# -ge 1 ] || usage 1
+case "$1" in
+  -h|--help|help) usage 0 ;;
+  issue) shift; issue "$@" ;;
+  push)  shift; push "$@" ;;
+  api)   shift; api "$@" ;;
+  *) die "unknown command: $1 (try: forgejo --help)" ;;
+esac

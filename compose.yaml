@@ -1,0 +1,48 @@
+# claude-container - single long-lived sandbox.
+#
+# No secrets here. After `up`, personalise + log in once:
+#   docker compose up -d --build
+#   docker compose exec claude first-setup.sh
+#
+# Configure via env (ALL optional; nothing set = a plain sandbox). Put your values in a
+# gitignored compose.override.yaml. Opinionated toward Forgejo: set FORGE_HOST/FORGE_ORG/
+# FORGE_TOKEN and you get the `forgejo` wrapper + auto-clone from your org for free.
+# SETUP_REPO/SETUP_TOKEN run a personalisation repo (dotfiles / agent-memory) at
+# first-setup. See the README for the full config list.
+#
+# End a *web* session by Delete/Archive in claude.ai/code (it tears down cleanly).
+services:
+  claude:
+    build: .
+    image: claude-container:latest
+    container_name: claude-box
+    # All config is optional and comes from a gitignored .env (see .env.example).
+    # No .env (or an empty one) = a plain sandbox.
+    env_file:
+      - path: .env
+        required: false
+    # Session "origin" shown in claude.ai/code (default: the random container id).
+    hostname: ${CONTAINER_HOSTNAME:-claude-container}
+    restart: unless-stopped
+    init: true            # reap tmux/claude children
+    stdin_open: true      # so `docker compose exec` (login) is interactive
+    tty: true
+    # Hardening. Runs as non-root `node` already; on top of that:
+    cap_drop:
+      - ALL                       # the agent needs no Linux capabilities
+    security_opt:
+      - no-new-privileges:true    # block setuid privilege escalation
+    read_only: true               # immutable rootfs; writes go to the volumes + tmpfs
+    tmpfs:
+      - /tmp                      # tmux socket, mktemp, scratch
+      - /run
+    volumes:
+      - claude-home:/home/node/.claude   # the container's OWN ~/.claude: creds,
+                                         # .claude.json (account/org, via CLAUDE_CONFIG_DIR),
+                                         # ~/.config + ~/.local (symlinked in). Small + scoped.
+      - claude-work:/workspace           # where sessions launch (cloned/mounted repos)
+    # No ports: remote-control is an outbound bridge.
+
+volumes:
+  claude-home:
+  claude-work:

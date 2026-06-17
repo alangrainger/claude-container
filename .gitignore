@@ -1,0 +1,6 @@
+.env
+.env.local
+compose.override.yaml
+compose.override.yaml.bak
+*.local
+.idea

@@ -1,0 +1,10 @@
+# Keep the build context tiny; only the Dockerfile-referenced files are needed.
+.git
+.gitignore
+.dockerignore
+*.md
+docs/
+.env
+.env.*
+compose.yaml
+compose.override.yaml
