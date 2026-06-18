@@ -106,6 +106,18 @@ launch_control() {
        --permission-mode $(printf '%q' "$PERMISSION_MODE")"
 }
 
+# Archive any stale bridge-pointer so claude mints a fresh web-session link.
+# The pointer persists in the bind-mounted ~/.claude but always refers to a
+# dead process after a container restart or session crash, never a live one.
+clear_control_bridge_pointer() {
+  local slug bp
+  slug="$(printf '%s' "$CONTROL_DIR" | sed 's#[^A-Za-z0-9]#-#g')"
+  bp="$CONFIG_DIR/projects/$slug/bridge-pointer.json"
+  [ -f "$bp" ] || return 0
+  mv "$bp" "$bp.stale" 2>/dev/null \
+    && echo "claude-container: archived stale control bridge-pointer (fresh web link will be minted)"
+}
+
 mkdir -p "$CONTROL_DIR" 2>/dev/null || true
 # Install the control instructions so the agent knows it can launch sessions.
 cp -f /usr/local/share/control-CLAUDE.md "$CONTROL_DIR/CLAUDE.md" 2>/dev/null || true
@@ -113,6 +125,7 @@ accept_remote_control
 trust_dir "$CONTROL_DIR"
 tmux start-server 2>/dev/null || true
 echo "claude-container: starting control session ($CONTROL_TMUX -> \"$CONTROL_NAME\") in $CONTROL_DIR"
+clear_control_bridge_pointer
 launch_control || true
 
 # Supervise: keep cc-control alive (it is the always-on console you launch others from)
@@ -120,6 +133,7 @@ launch_control || true
 while true; do
   if ! tmux has-session -t "=$CONTROL_TMUX" 2>/dev/null; then
     echo "claude-container: control session gone - relaunching"
+    clear_control_bridge_pointer
     launch_control || true
   fi
   sleep 15
