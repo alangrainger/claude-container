@@ -58,6 +58,47 @@ nothing set you get a plain Claude sandbox. `.env` is gitignored - keep your tok
 
 See [`.env.example`](.env.example) for the full list with examples.
 
+### Docker access (DooD)
+
+The image ships `docker` (CLI) and `docker compose` (v2 plugin). To let the agent actually
+build and run containers, mount your host's Docker socket — the agent drives the host daemon,
+no Docker daemon runs inside the container.
+
+**Linux:**
+
+```sh
+# Find your host's docker group ID
+stat -c '%g' /var/run/docker.sock   # commonly 999 or 998
+```
+
+Create a `compose.override.yaml` (auto-loaded by `docker compose`, gitignore it):
+
+```yaml
+services:
+  claude:
+    group_add:
+      - "999"          # replace with your DOCKER_GID
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+```
+
+**macOS / OrbStack:** the socket is user-accessible — only the volume mount is needed,
+no `group_add`:
+
+```yaml
+services:
+  claude:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+```
+
+The agent's `docker login` credentials and contexts are stored under the persisted
+`~/.claude` volume (`DOCKER_CONFIG=~/.config/docker`), so they survive image rebuilds.
+
+`docker` and `docker compose` commands are pre-allowlisted in the image's default
+`settings.json` so they run without per-call prompts. Existing volumes: add them to
+your `~/.claude/settings.json` manually if you've already run first-setup.
+
 ### GitHub access (`gh`)
 
 The image bakes in the `gh` CLI, but it needs a token to be useful (most subcommands
@@ -106,7 +147,7 @@ control session (the launcher resets the stale session pointer, so reusing a nam
 
 | File                        | Role                                                            |
 |-----------------------------|-----------------------------------------------------------------|
-| `Dockerfile`                | Alpine + Node + claude-code + tmux/git/ripgrep/python, non-root |
+| `Dockerfile`                | Alpine + Node + claude-code + tmux/git/ripgrep/python/docker-cli, non-root |
 | `compose.yaml`              | The service, volumes, hardening, and `.env` loading             |
 | `.env.example`              | Template for your gitignored `.env`                             |
 | `scripts/first-setup.sh`    | One-time login + optional setup-repo hook                       |

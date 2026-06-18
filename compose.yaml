@@ -32,6 +32,13 @@ services:
     security_opt:
       - no-new-privileges:true    # block setuid privilege escalation
     read_only: true               # immutable rootfs; writes go to the volumes + tmpfs
+    # Optional: Docker-outside-Docker (DooD). The image ships docker-cli + compose v2.
+    # To connect them to your host daemon, mount the socket and add the host's docker group.
+    # Linux - get the group ID: stat -c '%g' /var/run/docker.sock  (commonly 999 or 998)
+    # macOS/OrbStack - socket is user-accessible; group_add is typically not needed.
+    # Either add these to a gitignored compose.override.yaml, or uncomment here:
+    #group_add:
+    #  - "${DOCKER_GID:-999}"    # must match the host docker group GID
     tmpfs:
       - /tmp                      # tmux socket, mktemp, scratch
       - /run
@@ -40,6 +47,7 @@ services:
                                          # .claude.json (account/org, via CLAUDE_CONFIG_DIR),
                                          # ~/.config + ~/.local (symlinked in). Small + scoped.
       - claude-work:/workspace           # where sessions launch (cloned/mounted repos)
+      #- /var/run/docker.sock:/var/run/docker.sock   # DooD: also uncomment group_add above
     # No ports: remote-control is an outbound bridge.
 
 volumes:

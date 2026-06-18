@@ -25,7 +25,14 @@ ARG CLAUDE_CODE_VERSION=latest
 # --break-system-packages; the agent can apk-add build deps at runtime for C wheels.
 # github-cli (`gh`) - browse GitHub from inside the container. Needs a dev-supplied
 # GH_TOKEN to be useful (see .env.example); read-only with a no-scope classic PAT.
+# docker-cli + docker-cli-compose: Docker CLI and the Compose v2 plugin. Connects to
+# the host daemon via a mounted socket (DooD) - no daemon runs inside the container.
+# DOCKER_CONFIG points at the persisted ~/.config volume so `docker login` / contexts
+# survive image rebuilds. See compose.yaml for how to mount the host socket.
+# sqlite: the `sqlite3` CLI for inspecting SQLite databases (e.g. app state in tests).
+# openssl: key/cert operations and hashing in agent scripts and test harnesses.
 RUN apk add --no-cache bash tmux git jq curl ripgrep ca-certificates python3 py3-pip github-cli \
+    docker-cli docker-cli-compose sqlite openssl \
  && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
  && npm cache clean --force
 
@@ -42,6 +49,8 @@ RUN apk add --no-cache bash tmux git jq curl ripgrep ca-certificates python3 py3
 RUN mkdir -p /home/node/.claude/.local/bin /home/node/.claude/.config /workspace \
  && ln -s .claude/.local  /home/node/.local \
  && ln -s .claude/.config /home/node/.config \
+ && printf '{"permissions":{"allow":["Bash(docker *)","Bash(docker compose *)"]}}\n' \
+    > /home/node/.claude/settings.json \
  && chown -R node:node /home/node /workspace
 
 # Image-versioned scripts (live outside the volume, so a rebuild updates them).
@@ -60,7 +69,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/first-setup.sh \
 
 ENV HOME=/home/node \
     PATH=/home/node/.local/bin:/usr/local/bin:/usr/bin:/bin \
-    CLAUDE_CONFIG_DIR=/home/node/.claude
+    CLAUDE_CONFIG_DIR=/home/node/.claude \
+    DOCKER_CONFIG=/home/node/.config/docker
 USER node
 WORKDIR /home/node
 
