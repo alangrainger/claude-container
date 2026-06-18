@@ -79,6 +79,19 @@ claude.ai/code). Open it from any device and ask, in plain English, to *"launch 
 
 To stop a session, **Delete or Archive it** in claude.ai/code - the container cleans up.
 
+### Session lifecycle
+
+The **control session stays open always** - it is supervised, so the container relaunches
+it if it dies. The `cc-<repo>` sessions are **per-conversation working sessions**, not
+permanent fixtures: nothing forces them open and nothing auto-cleans them, so one lives
+until you close it or the container is recreated.
+
+Keep a `cc-<repo>` session open while a piece of work is in flight (fine to span several
+days); **close or archive it once that thread is done**, mainly to keep the claude.ai/code
+session list readable. Closing loses nothing structural - your work is in git and the
+mounted volume, not the tmux session - and relaunching is one plain-English request to the
+control session (the launcher resets the stale session pointer, so reusing a name is clean).
+
 ## How it works
 
 - **One container, many sessions.** Each session is a `tmux` session running
