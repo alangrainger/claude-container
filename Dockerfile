@@ -23,7 +23,9 @@ ARG CLAUDE_CODE_VERSION=latest
 # for small scripts/data work, so it ships in the image (a dev env without it is
 # crippling). Note: Alpine enforces PEP 668, so `pip install` wants a venv or
 # --break-system-packages; the agent can apk-add build deps at runtime for C wheels.
-RUN apk add --no-cache bash tmux git jq curl ripgrep ca-certificates python3 py3-pip \
+# github-cli (`gh`) - browse GitHub from inside the container. Needs a dev-supplied
+# GH_TOKEN to be useful (see .env.example); read-only with a no-scope classic PAT.
+RUN apk add --no-cache bash tmux git jq curl ripgrep ca-certificates python3 py3-pip github-cli \
  && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
  && npm cache clean --force
 

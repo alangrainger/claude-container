@@ -49,6 +49,7 @@ nothing set you get a plain Claude sandbox. `.env` is gitignored - keep your tok
 | Variable                                           | What it does                                                                                    |
 |----------------------------------------------------|-------------------------------------------------------------------------------------------------|
 | `FORGE_HOST`, `FORGE_ORG`, `FORGE_TOKEN`           | Turn on the baked `forgejo` CLI (issues + commits) and auto-cloning repos by name from your org |
+| `GH_TOKEN`                                         | Token for the baked `gh` CLI (browse GitHub); no-scope classic PAT = read-only, see below       |
 | `WEB_NAME_PREFIX`                                  | Label your sessions in claude.ai/code, e.g. `[Laptop]`                                          |
 | `SETUP_REPO`                                       | Clone and run your own setup repo at first-setup (dotfiles, agent-memory)                       |
 | `GIT_BASE`, `GIT_USER`, `GIT_TOKEN`                | Auto-clone from any git host (defaults to your Forgejo org)                                     |
@@ -56,6 +57,18 @@ nothing set you get a plain Claude sandbox. `.env` is gitignored - keep your tok
 | `WORKDIR`, `PERMISSION_MODE`, `CONTAINER_HOSTNAME` | Where sessions run, claude's permission mode, the name shown as the session origin              |
 
 See [`.env.example`](.env.example) for the full list with examples.
+
+### GitHub access (`gh`)
+
+The image bakes in the `gh` CLI, but it needs a token to be useful (most subcommands
+refuse to run unauthenticated, and the unauthenticated REST limit of 60 req/hr is shared
+across everyone behind the container's NAT). Create the token yourself and set `GH_TOKEN`:
+
+- **Read-only (default):** a **classic** PAT with **no scopes checked** reads all public
+  GitHub (repos, issues, PRs, code search) and raises the limit to 5,000 req/hr - no
+  private access, no write. Fine-grained PATs can't browse all of GitHub, so use classic.
+- **Write (opt-in):** a classic PAT **with** scopes (e.g. `repo`) to open PRs/issues or
+  push. Same `GH_TOKEN` var; the only difference is the token you generate.
 
 ## Using it
 
