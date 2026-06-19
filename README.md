@@ -55,6 +55,7 @@ nothing set you get a plain Claude sandbox. `.env` is gitignored - keep your tok
 | `GIT_BASE`, `GIT_USER`, `GIT_TOKEN`                | Auto-clone from any git host (defaults to your Forgejo org)                                     |
 | `FORGE_WORKDIR`                                    | Where forge-org repos launch; defaults to `WORKDIR`                                             |
 | `WORKDIR`, `PERMISSION_MODE`, `CONTAINER_HOSTNAME` | Where sessions run, claude's permission mode, the name shown as the session origin              |
+| `ENABLE_MENTION_POLLER`, `MENTION_POLLER_INTERVAL`, `MENTION_RATE_CAP` | Poll Forgejo for @mentions and auto-dispatch to the right `cc-<repo>` session. Requires Forgejo vars |
 
 See [`.env.example`](.env.example) for the full list with examples.
 
@@ -133,6 +134,17 @@ session list readable. Closing loses nothing structural - your work is in git an
 mounted volume, not the tmux session - and relaunching is one plain-English request to the
 control session (the launcher resets the stale session pointer, so reusing a name is clean).
 
+### Mention poller
+
+Set `ENABLE_MENTION_POLLER=1` and the container will watch your Forgejo notifications for
+`@mention`s on issues. When one arrives, the poller injects it into the relevant
+`cc-<repo>` session - spawning one first via `launch_session.sh --approve <repo>` if it
+isn't open yet. The session reads the issue, does the work, and replies with a comment.
+
+Requires `FORGE_HOST`, `FORGE_ORG`, and `FORGE_TOKEN`. A rate cap (`MENTION_RATE_CAP`,
+default 10 per hour) and self-reply loop guard are built in. See `.env.example` for all
+options.
+
 ## How it works
 
 - **One container, many sessions.** Each session is a `tmux` session running
@@ -153,6 +165,7 @@ control session (the launcher resets the stale session pointer, so reusing a nam
 | `scripts/first-setup.sh`    | One-time login + optional setup-repo hook                       |
 | `bin/launch_session.sh`     | Starts (and clones) a session for a repo                        |
 | `bin/forgejo`               | The Forgejo API wrapper                                         |
+| `bin/mention-poller.sh`     | Polls Forgejo notifications and dispatches @mentions to sessions |
 | `.github/workflows/ci.yaml` | Builds + publishes the image to GHCR on a version tag           |
 
 ## Build from source

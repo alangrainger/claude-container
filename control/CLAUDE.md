@@ -24,6 +24,15 @@ launch_session.sh --approve <name>
 Then tell the user it's launched and to open the new session in claude.ai/code. Run
 `launch_session.sh --help` if you need the options.
 
+## @mention auto-dispatch
+
+If `ENABLE_MENTION_POLLER=1` is set, a background poller watches Forgejo notifications
+for `@mention`s on issues and injects them directly into the relevant `cc-<repo>` session -
+or spawns one via `launch_session.sh --approve <repo>` if that repo isn't open yet. You do
+not need to do anything: the poller handles the full dispatch and marks each notification
+read so it isn't repeated. It caps auto-dispatches at `MENTION_RATE_CAP` per hour (default
+10) and skips its own replies to avoid loops.
+
 ## Notes
 
 - This session is just the **console** - do project work in the sessions you launch, not

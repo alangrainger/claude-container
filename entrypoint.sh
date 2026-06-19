@@ -128,6 +128,16 @@ echo "claude-container: starting control session ($CONTROL_TMUX -> \"$CONTROL_NA
 clear_control_bridge_pointer
 launch_control || true
 
+# Mention poller: watch Forgejo notifications for @mentions and dispatch to sessions.
+if [ "${ENABLE_MENTION_POLLER:-0}" = "1" ]; then
+  echo "claude-container: starting mention poller (interval: ${MENTION_POLLER_INTERVAL:-30}s)"
+  ( while true; do
+      mention-poller.sh || true
+      echo "claude-container: mention poller exited - restarting in 10s"
+      sleep 10
+    done ) &
+fi
+
 # Supervise: keep cc-control alive (it is the always-on console you launch others from)
 # and keep the container running. A dead control session is relaunched.
 while true; do

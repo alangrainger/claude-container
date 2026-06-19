@@ -60,12 +60,14 @@ RUN mkdir -p /home/node/.claude/.local/bin /home/node/.claude/.config /workspace
 COPY entrypoint.sh          /usr/local/bin/entrypoint.sh
 COPY scripts/first-setup.sh /usr/local/bin/first-setup.sh
 COPY bin/launch_session.sh  /usr/local/bin/launch_session.sh
-COPY bin/forgejo            /usr/local/bin/forgejo
+COPY bin/forgejo             /usr/local/bin/forgejo
+COPY bin/mention-poller.sh  /usr/local/bin/mention-poller.sh
 # Instructions the control session reads (entrypoint installs it as CONTROL_DIR/CLAUDE.md
 # so the agent knows it can launch other sessions via launch_session.sh).
 COPY control/CLAUDE.md      /usr/local/share/control-CLAUDE.md
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/first-setup.sh \
-             /usr/local/bin/launch_session.sh /usr/local/bin/forgejo
+             /usr/local/bin/launch_session.sh /usr/local/bin/forgejo \
+             /usr/local/bin/mention-poller.sh
 
 ENV HOME=/home/node \
     PATH=/home/node/.local/bin:/usr/local/bin:/usr/bin:/bin \
