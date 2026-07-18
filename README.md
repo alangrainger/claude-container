@@ -39,7 +39,41 @@ docker compose exec claude first-setup.sh
 4. Restart the container and the **🛠️ Control** session should appear in https://claude.ai/code
 
 That's it. From now on the container reconnects on its own across restarts, image
-rebuilds, and host reboots - you won't log in again.
+rebuilds, and host reboots.
+
+## Re-authenticating
+
+A logged-in container renews itself indefinitely while it's running. The one case that
+does need you again: the OAuth **refresh token** has a ~15-day life, and a container
+that sits stopped or idle long enough stops renewing it. When it lapses, the login is
+dead and the 🛠️ Control session won't come up.
+
+The entrypoint detects this and says so (and warns you in the logs for the 3 days
+before it happens). To renew:
+
+```sh
+docker compose exec claude reauth.sh
+docker compose restart
+```
+
+`reauth.sh` is login-only - unlike `first-setup.sh` it does not re-run your
+`SETUP_REPO` clone, so it's safe against an already-personalised volume.
+
+It also solves the annoying part of the flow: the OAuth URL wraps across terminal rows,
+and a wrapped URL can't be mouse-selected cleanly (especially over SSH into the docker
+host). The script runs the login in a wide tmux pane and reads the URL back with
+`capture-pane -J`, which joins wrapped lines, so it prints as one copyable string.
+
+If you ever need to do it by hand, that's the trick worth knowing:
+
+```sh
+tmux capture-pane -p -J -t cc-login | grep -Eo 'https://[^ ]+'
+```
+
+> **Don't** copy a working `~/.claude/.credentials.json` from your host machine into the
+> volume as a shortcut. Both clients would then refresh against the same rotating
+> refresh token and invalidate each other, giving you recurring surprise logouts in both
+> places.
 
 ## Configuration
 
@@ -163,6 +197,7 @@ options.
 | `compose.yaml`              | The service, volumes, hardening, and `.env` loading             |
 | `.env.example`              | Template for your gitignored `.env`                             |
 | `scripts/first-setup.sh`    | One-time login + optional setup-repo hook                       |
+| `scripts/reauth.sh`         | Re-login when the refresh token expires (no setup-repo re-run)  |
 | `bin/launch_session.sh`     | Starts (and clones) a session for a repo                        |
 | `bin/forgejo`               | The Forgejo API wrapper                                         |
 | `bin/mention-poller.sh`     | Polls Forgejo notifications and dispatches @mentions to sessions |

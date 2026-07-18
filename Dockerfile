@@ -59,6 +59,7 @@ RUN mkdir -p /home/node/.claude/.local/bin /home/node/.claude/.config /workspace
 # personalisation hook can still shadow it via ~/.local/bin (earlier on PATH).
 COPY entrypoint.sh          /usr/local/bin/entrypoint.sh
 COPY scripts/first-setup.sh /usr/local/bin/first-setup.sh
+COPY scripts/reauth.sh /usr/local/bin/reauth.sh
 COPY bin/launch_session.sh  /usr/local/bin/launch_session.sh
 COPY bin/forgejo             /usr/local/bin/forgejo
 COPY bin/mention-poller.sh  /usr/local/bin/mention-poller.sh
@@ -66,6 +67,7 @@ COPY bin/mention-poller.sh  /usr/local/bin/mention-poller.sh
 # so the agent knows it can launch other sessions via launch_session.sh).
 COPY control/CLAUDE.md      /usr/local/share/control-CLAUDE.md
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/first-setup.sh \
+             /usr/local/bin/reauth.sh \
              /usr/local/bin/launch_session.sh /usr/local/bin/forgejo \
              /usr/local/bin/mention-poller.sh
 

@@ -67,6 +67,48 @@ EOF
   exec sleep infinity
 fi
 
+# Expiry gate. A credential can be present and non-empty but dead, in which case the
+# check above passes and cc-control fails to start with no explanation - the container
+# looks healthy while nothing works.
+#
+# Note WHICH field: .expiresAt is the short-lived access token (~8h, refreshed
+# constantly) and gating on it would false-alarm many times a day. The boundary that
+# actually forces a browser login is .refreshTokenExpiresAt (~15 days). An idle
+# container stops refreshing, that lapses, and auth dies silently - exactly the case
+# worth catching. Both fields are epoch MILLISECONDS.
+#
+# This is a diagnostic, so it must never be the reason startup fails: any missing jq,
+# absent field, or unparseable value just skips the check.
+check_credential_expiry() {
+  command -v jq >/dev/null 2>&1 || return 0
+  local exp_ms now_s exp_s left_d
+  exp_ms="$(jq -r '.claudeAiOauth.refreshTokenExpiresAt // empty' "$CRED" 2>/dev/null)" || return 0
+  case "$exp_ms" in ''|*[!0-9]*) return 0 ;; esac   # absent or non-numeric: skip
+  now_s="$(date +%s)"
+  exp_s=$(( exp_ms / 1000 ))
+
+  if [ "$exp_s" -le "$now_s" ]; then
+    cat <<EOF
+claude-container: the Claude login has EXPIRED (refresh token lapsed).
+Re-authenticate (login only - does not re-run your setup repo):
+
+    docker compose exec claude reauth.sh
+
+then:  docker compose restart
+
+Idling so you can exec in...
+EOF
+    exec sleep infinity
+  fi
+
+  # Still valid - warn early, while there is time to act without being locked out.
+  left_d=$(( (exp_s - now_s) / 86400 ))
+  if [ "$left_d" -le 3 ]; then
+    echo "claude-container: WARNING - Claude login expires in ~${left_d}d. Run 'docker compose exec claude reauth.sh' to renew."
+  fi
+}
+check_credential_expiry
+
 # cc-control bypasses the launcher, so trust its working dir directly (remote-control
 # refuses an untrusted workspace and cannot answer the dialog headlessly).
 trust_dir() {
