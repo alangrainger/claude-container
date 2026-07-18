@@ -24,20 +24,52 @@ if tmux has-session -t "=$SESSION" 2>/dev/null; then
   tmux kill-session -t "=$SESSION" 2>/dev/null || true
 fi
 
+# Read the pane as one string. -J joins wrapped lines, so a URL split across rows
+# comes back unbroken - the whole reason we drive this through tmux.
+pane() { tmux capture-pane -p -J -t "$SESSION" 2>/dev/null || true; }
+
+# Poll the pane for an extended regex; returns 0 as soon as it matches.
+wait_for() {
+  local re="$1" limit="$2" i
+  for i in $(seq 1 "$limit"); do
+    pane | grep -Eq "$re" && return 0
+    sleep 1
+  done
+  return 1
+}
+
 echo "reauth: starting claude in tmux session '$SESSION' ..."
 tmux new-session -d -s "$SESSION" -x "$PANE_WIDTH" -y "$PANE_HEIGHT" "claude"
 
-# Give the TUI a moment to paint before typing into it, or the slash command is lost.
-sleep 3
-tmux send-keys -t "$SESSION" "/login" Enter
+# Wait for the TUI to actually paint its input box - a fixed sleep either races the
+# slow case (cold start on a loaded host) or wastes time on the fast one.
+wait_for '>|Welcome|bypass permissions' 30 || echo "reauth: WARNING - claude's prompt never appeared; typing anyway"
+sleep 1
+tmux send-keys -t "$SESSION" "/login"
+# Typing a slash command opens the autocomplete popup, and the first Enter is consumed
+# by it (accepting the highlighted entry) rather than submitting. Send Enter, and if the
+# login menu hasn't appeared shortly after, send the one that actually submits.
+sleep 1
+tmux send-keys -t "$SESSION" Enter
+
+# /login does NOT go straight to the browser handoff: it first asks
+#   Select login method:
+#     > Claude account with subscription
+#       Anthropic Console account
+# and prints no URL until a choice is confirmed. Without this the poll below just
+# times out staring at the menu.
+if ! wait_for 'Select login method' 5; then
+  tmux send-keys -t "$SESSION" Enter
+  wait_for 'Select login method' 15 || echo "reauth: WARNING - login menu never appeared"
+fi
+# "Claude account with subscription" is the default highlighted option, which is the
+# one that belongs in this container; accept it.
+tmux send-keys -t "$SESSION" Enter
 
 echo "reauth: waiting for the OAuth URL (up to ${TIMEOUT}s) ..."
 url=""
 for _ in $(seq 1 "$TIMEOUT"); do
-  # -J joins wrapped lines, so a URL split across rows comes back as one string.
-  url="$(tmux capture-pane -p -J -t "$SESSION" 2>/dev/null \
-         | grep -Eo 'https://[^[:space:]]*(oauth|authorize)[^[:space:]]*' \
-         | tail -1)" || true
+  url="$(pane | grep -Eo 'https://[^[:space:]]*(oauth|authorize)[^[:space:]]*' | tail -1)"
   [ -n "$url" ] && break
   sleep 1
 done
