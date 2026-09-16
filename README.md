@@ -155,7 +155,27 @@ claude.ai/code). Open it from any device and ask, in plain English, to *"launch 
 
 To stop a session, **Delete or Archive it** in claude.ai/code - the container cleans up.
 
-### Session lifecycle
+#### Headless browser (Chromium)
+
+The image bakes in Alpine's Chromium (with Noto fonts) so the agent can render pages,
+take screenshots, print PDFs, or drive it from Puppeteer/Playwright. It always runs
+headless with `--no-sandbox` (the container is the sandbox: non-root, no capabilities,
+read-only rootfs) and a throwaway profile under `/tmp`, so nothing lands in the
+persisted volume. Those flags come from `/etc/chromium/claude-container.conf`;
+`chromium`, `chromium-browser`, `CHROME_BIN` and `PUPPETEER_EXECUTABLE_PATH` all point
+at the same launcher, and caller flags override the defaults.
+
+```sh
+chromium --screenshot=/tmp/page.png --window-size=1280,800 https://example.com
+chromium --dump-dom https://example.com
+chromium --print-to-pdf=/tmp/page.pdf --no-pdf-header-footer https://example.com
+```
+
+`npm i puppeteer-core` works out of the box (`PUPPETEER_SKIP_DOWNLOAD` is set - the
+bundled glibc Chrome would not run on Alpine). For Playwright, pass
+`executablePath: process.env.CHROME_BIN` to `chromium.launch()`.
+
+## Session lifecycle
 
 The **control session stays open always** - it is supervised, so the container relaunches
 it if it dies. The `cc-<repo>` sessions are **per-conversation working sessions**, not
@@ -193,7 +213,7 @@ options.
 
 | File                        | Role                                                            |
 |-----------------------------|-----------------------------------------------------------------|
-| `Dockerfile`                | Alpine + Node + claude-code + tmux/git/ripgrep/python/docker-cli, non-root |
+| `Dockerfile`                | Alpine + Node + claude-code + tmux/git/ripgrep/python/docker-cli/chromium, non-root |
 | `compose.yaml`              | The service, volumes, hardening, and `.env` loading             |
 | `.env.example`              | Template for your gitignored `.env`                             |
 | `scripts/first-setup.sh`    | One-time login + optional setup-repo hook                       |

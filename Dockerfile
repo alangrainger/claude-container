@@ -31,10 +31,41 @@ ARG CLAUDE_CODE_VERSION=latest
 # survive image rebuilds. See compose.yaml for how to mount the host socket.
 # sqlite: the `sqlite3` CLI for inspecting SQLite databases (e.g. app state in tests).
 # openssl: key/cert operations and hashing in agent scripts and test harnesses.
+# chromium + fonts: a headless browser for the agent (page fetches, screenshots, PDF,
+# Puppeteer/Playwright). Alpine's build is musl-native and exists for both arches -
+# Puppeteer's own glibc download would not run here, hence PUPPETEER_* below. The flags
+# it needs to run under this container's hardening live in /etc/chromium (see below).
+# font-noto covers Latin/Greek/Cyrillic text; add font-noto-cjk for CJK if you need it.
 RUN apk add --no-cache bash tmux git jq curl ripgrep ca-certificates python3 py3-pip github-cli \
     docker-cli docker-cli-compose sqlite openssl \
+    chromium font-noto font-noto-emoji \
  && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
  && npm cache clean --force
+
+# Chromium flags, sourced by Alpine's /usr/bin/chromium{,-browser} launcher on every start
+# (also the path Puppeteer/Playwright use via PUPPETEER_EXECUTABLE_PATH). Caller flags come
+# after these, so tools that pass their own --user-data-dir etc. still win.
+#   --no-sandbox            Chromium's own sandbox needs setuid or user namespaces; both
+#                           are blocked by cap_drop ALL + no-new-privileges. The container
+#                           (non-root, read-only rootfs) is the sandbox instead.
+#   --headless              no display in the container.
+#   --disable-gpu           no GPU; avoids GL init noise.
+#   --disable-dev-shm-usage /dev/shm is 64 MB by default; use /tmp for shared memory.
+#   --user-data-dir=<tmp>   a fresh profile per launch under /tmp (tmpfs): keeps the
+#                           read-only rootfs / ~/.claude volume clean and lets concurrent
+#                           sessions each run their own instance.
+#   XDG_CONFIG_HOME=/tmp/.. Chromium insists on creating its crash-report database under
+#                           $XDG_CONFIG_HOME/chromium regardless of --user-data-dir, and
+#                           aborts (SIGTRAP) if it can't. Pointing it at /tmp keeps that
+#                           off the persisted ~/.config volume. Scoped to Chromium only:
+#                           the conf is sourced by the launcher, not the user's shell.
+#   XDG_CACHE_HOME=/tmp/..  fontconfig wants a writable cache dir or it complains on
+#                           every launch (~/.cache is on the read-only rootfs).
+RUN mkdir -p /etc/chromium \
+ && printf '%s\n' \
+      'export XDG_CONFIG_HOME=/tmp/chromium-config XDG_CACHE_HOME=/tmp/chromium-cache' \
+      'CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox --headless --disable-gpu --disable-dev-shm-usage --user-data-dir=$(mktemp -d /tmp/chromium.XXXXXX)"' \
+      > /etc/chromium/claude-container.conf
 
 # Non-root user (isolation). The node base image already ships a
 # UID-1000 `node` user; reuse it. Only ~/.claude is the named volume (kept small - no
@@ -74,7 +105,10 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/first-setup.sh \
 ENV HOME=/home/node \
     PATH=/home/node/.local/bin:/usr/local/bin:/usr/bin:/bin \
     CLAUDE_CONFIG_DIR=/home/node/.claude \
-    DOCKER_CONFIG=/home/node/.config/docker
+    DOCKER_CONFIG=/home/node/.config/docker \
+    CHROME_BIN=/usr/bin/chromium-browser \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser \
+    PUPPETEER_SKIP_DOWNLOAD=1
 USER node
 WORKDIR /home/node
 
