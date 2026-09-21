@@ -90,6 +90,7 @@ nothing set you get a plain Claude sandbox. `.env` is gitignored - keep your tok
 | `FORGE_WORKDIR`                                    | Where forge-org repos launch; defaults to `WORKDIR`                                             |
 | `WORKDIR`, `PERMISSION_MODE`, `CONTAINER_HOSTNAME` | Where sessions run, claude's permission mode, the name shown as the session origin              |
 | `ENABLE_MENTION_POLLER`, `MENTION_POLLER_INTERVAL`, `MENTION_RATE_CAP` | Poll Forgejo for @mentions and auto-dispatch to the right `cc-<repo>` session. Requires Forgejo vars |
+| `COMPOSE_PROFILES=ide`, `IDE_PORT`, `IDE_BIND`, `IDE_PASSWORD`, `IDE_AUTH` | Optional browser IDE (code-server) sharing `/workspace`, see below |
 
 See [`.env.example`](.env.example) for the full list with examples.
 
@@ -199,6 +200,59 @@ Requires `FORGE_HOST`, `FORGE_ORG`, and `FORGE_TOKEN`. A rate cap (`MENTION_RATE
 default 10 per hour) and self-reply loop guard are built in. See `.env.example` for all
 options.
 
+## Web IDE (optional)
+
+A [code-server](https://github.com/coder/code-server) (VS Code in the browser) sidecar
+that shares the `/workspace` volume with the sandbox, so you can watch and edit the files
+the agent works on from any browser, with nothing installed on the client. The sandbox
+itself is unchanged: no IDE inside it, still no ports, still read-only.
+
+```sh
+echo COMPOSE_PROFILES=ide >> .env    # switch the sidecar on
+docker compose up -d                 # now also pulls and starts claude-ide
+docker compose exec ide cat /home/coder/.config/code-server/config.yaml   # generated password
+```
+
+Open http://localhost:8443. Every launched repo shows up as a sub-repo in the Source
+Control view, and the Timeline view shows the agent's edits per file as they land.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `COMPOSE_PROFILES` | unset | `ide` includes the sidecar in `docker compose up` |
+| `IDE_PORT` | `8443` | host port |
+| `IDE_BIND` | `127.0.0.1` | host bind address; `0.0.0.0` to listen on the LAN |
+| `IDE_PASSWORD` | unset | login password; unset = code-server generates one on first start |
+| `IDE_AUTH` | `password` | `none` when a reverse proxy or Tailscale already authenticates |
+
+**Exposure is write access.** Anyone who reaches the IDE has the agent's write access to
+`/workspace` plus a terminal in the sidecar, so it binds to localhost only unless you say
+otherwise. Password auth over plain HTTP on a LAN is weak. The usual ways to reach it
+from another device:
+
+- **Tailscale Serve** (recommended): keep the localhost default and run
+  `tailscale serve --bg 8443` on the Docker host. Tailscale terminates TLS and only
+  your tailnet can reach it. Set `IDE_AUTH=none` if you don't want a second login.
+- **Reverse proxy** (Caddy, Traefik, nginx) with TLS and its own auth in front:
+  set `IDE_AUTH=none`, keep `IDE_BIND=127.0.0.1`, and proxy to port 8443.
+- **LAN with a password:** `IDE_BIND=0.0.0.0` and `IDE_PASSWORD=...`. Plain HTTP, so
+  only on a network you trust.
+
+Notes:
+
+- `.env` is also the sandbox's environment, so a set `IDE_PASSWORD` is readable by the
+  agent. Leave it unset and use the generated one, which lives only in the sidecar's
+  `claude-ide` volume (as do its settings, extensions and workspace state).
+- Extensions come from [Open VSX](https://open-vsx.org), not the Microsoft marketplace.
+  Most are there; some Microsoft-only ones (Live Share, the Remote packs) are not.
+- The sidecar's terminal has git but no Node or other toolchain. Use it for git and
+  small edits; builds and tests run in the sandbox, as before.
+- If `FORGE_WORKDIR` points inside `~/.claude` (the agent-memory setup), org repos are
+  not under `/workspace`. `compose.yaml` has a commented-out second mount that exposes
+  just that folder via a volume `subpath` (Docker Engine 26+); never mount the whole
+  `claude-home` volume, it holds your credentials. On Podman, or if your volumes are host
+  bind mounts, mount the host directory instead. Add it as a second workspace root in
+  the UI once; code-server remembers it.
+
 ## How it works
 
 - **One container, many sessions.** Each session is a `tmux` session running
@@ -214,7 +268,7 @@ options.
 | File                        | Role                                                            |
 |-----------------------------|-----------------------------------------------------------------|
 | `Dockerfile`                | Alpine + Node + claude-code + tmux/git/ripgrep/python/docker-cli/chromium, non-root |
-| `compose.yaml`              | The service, volumes, hardening, and `.env` loading             |
+| `compose.yaml`              | The sandbox (+ optional IDE sidecar), volumes, hardening, `.env` loading |
 | `.env.example`              | Template for your gitignored `.env`                             |
 | `scripts/first-setup.sh`    | One-time login + optional setup-repo hook                       |
 | `scripts/reauth.sh`         | Re-login when the refresh token expires (no setup-repo re-run)  |

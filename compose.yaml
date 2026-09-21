@@ -50,6 +50,44 @@ services:
       #- /var/run/docker.sock:/var/run/docker.sock   # DooD: also uncomment group_add above
     # No ports: remote-control is an outbound bridge.
 
+  # Optional web IDE (code-server) sharing /workspace with the sandbox. Off by default:
+  # set COMPOSE_PROFILES=ide in .env and `docker compose up -d` includes it. Runs as
+  # `coder` (UID 1000 = `node` in claude-box) so both sides can edit the same files.
+  # See "Web IDE (optional)" in the README for exposure and auth options.
+  ide:
+    image: codercom/code-server:latest
+    container_name: claude-ide
+    profiles: [ide]
+    restart: unless-stopped
+    init: true
+    # Skip the image's entrypoint: it runs a setuid `fixuid`, which no-new-privileges
+    # blocks. UID 1000 already matches, so it has nothing to do anyway.
+    entrypoint: ["/usr/bin/code-server"]
+    command: ["--bind-addr", "0.0.0.0:8080", "--auth", "${IDE_AUTH:-password}", "/workspace"]
+    environment:
+      # Empty = code-server generates one on first start (kept in the claude-ide volume):
+      #   docker compose exec ide cat /home/coder/.config/code-server/config.yaml
+      PASSWORD: ${IDE_PASSWORD:-}
+    ports:
+      - "${IDE_BIND:-127.0.0.1}:${IDE_PORT:-8443}:8080"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - claude-work:/workspace           # same volume as claude-box
+      - claude-ide:/home/coder           # settings, extensions, workspace state
+      # If FORGE_WORKDIR points inside ~/.claude (e.g. /home/node/.claude/agent-projects),
+      # expose just that folder as a second root. Never mount the whole claude-home
+      # volume: it holds credentials. Needs Docker Engine 26+ / Compose 2.27+ (subpath);
+      # on Podman or with host bind mounts, mount the host directory instead.
+      #- type: volume
+      #  source: claude-home
+      #  target: /agent-projects
+      #  volume:
+      #    subpath: agent-projects
+
 volumes:
   claude-home:
   claude-work:
+  claude-ide:
