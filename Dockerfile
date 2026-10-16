@@ -94,13 +94,24 @@ COPY scripts/reauth.sh /usr/local/bin/reauth.sh
 COPY bin/launch_session.sh  /usr/local/bin/launch_session.sh
 COPY bin/forgejo             /usr/local/bin/forgejo
 COPY bin/mention-poller.sh  /usr/local/bin/mention-poller.sh
+COPY bin/relogin.sh         /usr/local/bin/relogin.sh
 # Instructions the control session reads (entrypoint installs it as CONTROL_DIR/CLAUDE.md
 # so the agent knows it can launch other sessions via launch_session.sh).
 COPY control/CLAUDE.md      /usr/local/share/control-CLAUDE.md
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/first-setup.sh \
              /usr/local/bin/reauth.sh \
              /usr/local/bin/launch_session.sh /usr/local/bin/forgejo \
-             /usr/local/bin/mention-poller.sh
+             /usr/local/bin/mention-poller.sh /usr/local/bin/relogin.sh
+
+# Container-wide Claude Code settings. Managed settings ship in the image rather than the
+# ~/.claude volume, so an existing volume picks them up on the next pull and a SETUP_REPO
+# installer that rewrites settings.json cannot drop them; their hooks run alongside the
+# user's own. The SessionStart hook is silent until the login is within 7 days of its fixed
+# 30-day expiry, then has the session offer to renew it (see bin/relogin.sh).
+RUN mkdir -p /etc/claude-code \
+ && printf '%s\n' \
+      '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/usr/local/bin/relogin.sh nag"}]}]}}' \
+      > /etc/claude-code/managed-settings.json
 
 ENV HOME=/home/node \
     PATH=/home/node/.local/bin:/usr/local/bin:/usr/bin:/bin \

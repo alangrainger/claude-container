@@ -73,9 +73,9 @@ fi
 #
 # Note WHICH field: .expiresAt is the short-lived access token (~8h, refreshed
 # constantly) and gating on it would false-alarm many times a day. The boundary that
-# actually forces a browser login is .refreshTokenExpiresAt (~15 days). An idle
-# container stops refreshing, that lapses, and auth dies silently - exactly the case
-# worth catching. Both fields are epoch MILLISECONDS.
+# actually forces a browser login is .refreshTokenExpiresAt: a fixed 30 days from the
+# browser login, which refreshing does NOT extend. When it lapses, auth dies silently -
+# exactly the case worth catching. Both fields are epoch MILLISECONDS.
 #
 # This is a diagnostic, so it must never be the reason startup fails: any missing jq,
 # absent field, or unparseable value just skips the check.

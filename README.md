@@ -43,13 +43,29 @@ rebuilds, and host reboots.
 
 ## Re-authenticating
 
-A logged-in container renews itself indefinitely while it's running. The one case that
-does need you again: the OAuth **refresh token** has a ~15-day life, and a container
-that sits stopped or idle long enough stops renewing it. When it lapses, the login is
-dead and the 🛠️ Control session won't come up.
+The Claude login lasts a **fixed 30 days** from the browser login. Using it keeps the
+short-lived access token fresh but does not extend that window, so a re-login is due
+every month, busy or idle.
 
-The entrypoint detects this and says so (and warns you in the logs for the 3 days
-before it happens). To renew:
+Renew it from your phone before it lapses. Once fewer than 7 days are left, every new
+session (🛠️ Control or a project one) is told and offers to renew; you can also ask the
+🛠️ Control session at any time. It takes two messages:
+
+1. The session runs `relogin.sh start` and posts the login URL.
+2. You open it, approve, and paste back the code from the callback page. The session runs
+   `relogin.sh code '<code>'` and reports the result.
+
+Sessions that are already running should pick up the new login from the volume; if one
+stops responding afterwards, `docker compose restart`. `relogin.sh status` shows the time
+left. The reminder is a `SessionStart` hook in the image's managed settings
+(`/etc/claude-code/managed-settings.json`), so it needs no setup and runs alongside your
+own hooks.
+
+### Once it has lapsed
+
+If the login runs out, the 🛠️ Control session won't come up, so there is no chat to ask.
+The entrypoint detects this and says so (and warns in the logs for the 3 days before).
+Renew from the docker host instead:
 
 ```sh
 docker compose exec claude reauth.sh
@@ -271,10 +287,11 @@ Notes:
 | `compose.yaml`              | The sandbox (+ optional IDE sidecar), volumes, hardening, `.env` loading |
 | `.env.example`              | Template for your gitignored `.env`                             |
 | `scripts/first-setup.sh`    | One-time login + optional setup-repo hook                       |
-| `scripts/reauth.sh`         | Re-login when the refresh token expires (no setup-repo re-run)  |
+| `scripts/reauth.sh`         | Re-login from the docker host once the login has lapsed (no setup-repo re-run) |
 | `bin/launch_session.sh`     | Starts (and clones) a session for a repo                        |
 | `bin/forgejo`               | The Forgejo API wrapper                                         |
 | `bin/mention-poller.sh`     | Polls Forgejo notifications and dispatches @mentions to sessions |
+| `bin/relogin.sh`            | Renews the Claude login from any session, no terminal needed (+ the expiry reminder hook) |
 | `.github/workflows/ci.yaml` | Builds + publishes the image to GHCR on a version tag           |
 
 ## Build from source

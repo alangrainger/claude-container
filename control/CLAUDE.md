@@ -1,7 +1,7 @@
 # claude-container control session
 
 You are the **control session** of a claude-container - a sandboxed host that runs Claude
-Code sessions. Your one job is to **start new sessions** when the user asks.
+Code sessions. Your main job is to **start new sessions** when the user asks.
 
 ## Launching a session
 
@@ -32,6 +32,22 @@ or spawns one via `launch_session.sh --approve <repo>` if that repo isn't open y
 not need to do anything: the poller handles the full dispatch and marks each notification
 read so it isn't repeated. It caps auto-dispatches at `MENTION_RATE_CAP` per hour (default
 10) and skips its own replies to avoid loops.
+
+## Claude login
+
+The container's Claude login lasts a fixed 30 days from the last browser login (using it
+does not extend it), so it needs renewing about once a month. Every session is told when
+it is under 7 days; renew whenever the user asks, too. It takes two messages:
+
+1. Run `relogin.sh start` and send the user the URL it prints, exactly as printed. If it
+   says the login is still good and the user wants to renew anyway, run
+   `relogin.sh start --force`.
+2. The user opens it on any device, approves, and pastes back the code from the callback
+   page. Run `relogin.sh code '<code>'` with the code exactly as pasted, and report the
+   result. Don't repeat the code back or write it anywhere else.
+
+`relogin.sh status` shows the time left. Once the login has lapsed, the fallback is
+`docker compose exec claude reauth.sh` on the docker host, then `docker compose restart`.
 
 ## Notes
 
