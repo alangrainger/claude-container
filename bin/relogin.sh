@@ -46,10 +46,11 @@ cleanup() {
 }
 
 # Strip the OSC-8 hyperlink wrapper claude puts around the URL and print the URL itself.
+# The escape ends in ST (ESC \) or BEL depending on the run, so split on ESC and BEL both.
 # No `head`: under pipefail its early exit would SIGPIPE grep and fail a found URL.
 url_from_log() {
   local urls
-  urls="$(tr -d '\033' < "$LOG" | grep -Eo 'https://[^]\[[:space:]]+' | grep -F '/oauth/authorize')" || return 1
+  urls="$(tr '\033\007' '\n\n' < "$LOG" | grep -Eo 'https://[^]\[[:space:]]+' | grep -F '/oauth/authorize')" || return 1
   printf '%s\n' "${urls%%$'\n'*}"
 }
 
