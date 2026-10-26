@@ -14,6 +14,8 @@
 services:
   claude:
     image: alangrainger/claude-container:latest
+    # Reverse-engineering variant (REA + JDK + JADX + Apktool, ~250 MB more); see README:
+    #image: alangrainger/claude-container:re
     container_name: claude-box
     # All config is optional and comes from a gitignored .env (see .env.example).
     # No .env (or an empty one) = a plain sandbox.

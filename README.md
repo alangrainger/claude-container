@@ -192,6 +192,26 @@ chromium --print-to-pdf=/tmp/page.pdf --no-pdf-header-footer https://example.com
 bundled glibc Chrome would not run on Alpine). For Playwright, pass
 `executablePath: process.env.CHROME_BIN` to `chromium.launch()`.
 
+#### Reverse engineering (`:re` image)
+
+The `re` tag is the same sandbox plus [REA](https://github.com/morluto/rea) and its Android
+engines: a full JDK 21, JADX (decompiler) and Apktool (resources and manifest), all pinned
+and hash-checked. It adds about 250 MB, so it is a separate tag rather than part of
+`latest`. Switch `image:` in `compose.yaml` to `alangrainger/claude-container:re`, recreate
+the container, then register REA with Claude once:
+
+```sh
+docker compose exec claude rea setup --client claude_code --yes
+docker compose exec claude rea doctor --provider jadx --json
+```
+
+Setup writes the MCP server and the REA skill into the `~/.claude` volume, so every
+session (in any repo) has REA's tools from then on. Ghidra is not included yet.
+
+Treat APKs and firmware as untrusted: keep each download in its own new folder and
+analyse it statically. REA never runs the target. If you switch back to `latest`, run
+`claude mcp remove rea`, or sessions will report a failed MCP server.
+
 ## Session lifecycle
 
 The **control session stays open always** - it is supervised, so the container relaunches
@@ -302,3 +322,5 @@ repo, uncomment `build: .` (and comment out `image:`) in `compose.yaml`, then:
 ```sh
 docker compose up -d --build
 ```
+
+For the reverse-engineering variant, also set `target: re` under `build:`.

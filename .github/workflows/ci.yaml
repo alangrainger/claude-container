@@ -15,11 +15,15 @@ jobs:
   # Build each arch on its OWN native runner. No QEMU - emulating arm64 here is what
   # crashed the old single-runner build with SIGILL. Each job pushes an untagged,
   # content-addressed (by-digest) image to BOTH registries; the merge job tags them.
+  # Each arch builds both Dockerfile targets: `default` (the plain sandbox) and `re`
+  # (the reverse-engineering variant, published under the `re` tags).
   build:
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
+        platform: [linux/amd64, linux/arm64]
+        variant: [default, re]
         include:
           - platform: linux/amd64
             runner: ubuntu-latest
@@ -31,10 +35,19 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      # The default variant keeps the bare per-arch cache scope; `re` gets its own scope
+      # but also reads the default one, since it builds on the same base stage.
       - name: Prepare platform name
-        run: echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+        run: |
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+          if [ "$variant" = default ]; then
+            echo "CACHE_SCOPE=${platform//\//-}" >> "$GITHUB_ENV"
+          else
+            echo "CACHE_SCOPE=${variant}-${platform//\//-}" >> "$GITHUB_ENV"
+          fi
         env:
           platform: ${{ matrix.platform }}
+          variant: ${{ matrix.variant }}
 
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -69,10 +82,13 @@ jobs:
         with:
           context: .
           file: Dockerfile
+          target: ${{ matrix.variant }}
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
-          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
+          cache-from: |
+            type=gha,scope=${{ env.CACHE_SCOPE }}
+            type=gha,scope=${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ env.CACHE_SCOPE }}
           outputs: type=image,"name=${{ env.DOCKERHUB_IMAGE }},${{ env.GHCR_IMAGE }}",push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
@@ -85,7 +101,7 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ env.PLATFORM_PAIR }}
+          name: digests-${{ matrix.variant }}-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}/digests/*
           retention-days: 1
           if-no-files-found: error
@@ -93,9 +109,20 @@ jobs:
   # Stitch the per-arch digests into one multi-arch manifest per registry, tag it,
   # and attest each registry's final manifest. Same content was pushed to both
   # registries by digest, so each registry's manifest is built from its own digests.
+  # One merge per variant; `re` gets the same tags with an `-re` suffix and `re` for latest.
   merge:
     runs-on: ubuntu-latest
     needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: default
+            suffix: ''
+            latest: latest
+          - variant: re
+            suffix: '-re'
+            latest: re
     permissions:
       contents: read
       packages: write
@@ -106,7 +133,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: ${{ runner.temp }}/digests
-          pattern: digests-*
+          pattern: digests-${{ matrix.variant }}-*
           merge-multiple: true
 
       - name: Log in to GitHub Container Registry
@@ -125,7 +152,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      # Tags only (e.g. v1.2.3 -> 1.2.3, 1.2, latest). workflow_dispatch (no tag) = latest.
+      # Tags only (e.g. v1.2.3 -> 1.2.3, 1.2, latest; for re: 1.2.3-re, 1.2-re, re).
+      # workflow_dispatch (no tag) = latest / re.
       - name: Extract image metadata (tags)
         id: meta
         uses: docker/metadata-action@v5
@@ -134,9 +162,9 @@ jobs:
             ${{ env.DOCKERHUB_IMAGE }}
             ${{ env.GHCR_IMAGE }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            type=semver,pattern={{version}},suffix=${{ matrix.suffix }}
+            type=semver,pattern={{major}}.{{minor}},suffix=${{ matrix.suffix }}
+            type=raw,value=${{ matrix.latest }}
 
       - name: Create GHCR manifest list
         working-directory: ${{ runner.temp }}/digests
@@ -152,10 +180,13 @@ jobs:
             $(jq -cr '.tags | map(select(startswith("ghcr.io") | not) | "-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.DOCKERHUB_IMAGE }}@sha256:%s ' *)
 
+      # Inspect each registry's first generated tag, so the suffixed re tags resolve too.
       - name: Capture final manifest digests
         run: |
-          echo "GHCR_DIGEST=$(docker buildx imagetools inspect ${{ env.GHCR_IMAGE }}:${{ steps.meta.outputs.version }} --format '{{println .Manifest.Digest}}')" >> "$GITHUB_ENV"
-          echo "DOCKERHUB_DIGEST=$(docker buildx imagetools inspect ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.version }} --format '{{println .Manifest.Digest}}')" >> "$GITHUB_ENV"
+          ghcr_tag=$(jq -r '.tags | map(select(startswith("ghcr.io"))) | first' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          hub_tag=$(jq -r '.tags | map(select(startswith("ghcr.io") | not)) | first' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          echo "GHCR_DIGEST=$(docker buildx imagetools inspect "$ghcr_tag" --format '{{println .Manifest.Digest}}')" >> "$GITHUB_ENV"
+          echo "DOCKERHUB_DIGEST=$(docker buildx imagetools inspect "$hub_tag" --format '{{println .Manifest.Digest}}')" >> "$GITHUB_ENV"
 
       - name: Attest GHCR image
         uses: actions/attest-build-provenance@v4

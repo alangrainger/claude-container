@@ -4,7 +4,10 @@
 #
 # Alpine base for a small image. NOTE: Alpine is musl, not glibc - claude-code bundles
 # native bits (ripgrep), so musl compatibility is verified at build/run, not assumed.
-FROM node:22-alpine
+#
+# Two targets: the default (last stage) is the plain sandbox; `--target re` adds the
+# reverse-engineering toolchain (see the `re` stage below), published as the `:re` tag.
+FROM node:22-alpine AS base
 
 # claude-code version. Defaults to `latest` so a fresh build gets the current release -
 # operators want new features/fixes, and it's a fast-moving research preview. Pin a
@@ -124,3 +127,48 @@ USER node
 WORKDIR /home/node
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+# Reverse-engineering variant: REA (https://github.com/morluto/rea) with its Android
+# engines, so every session can decompile APKs without per-session setup. Build with
+# `--target re`. Everything is pinned and hash-checked; the binaries under analysis
+# never touch the image. Register REA with Claude once per volume:
+#   rea setup --client claude_code --yes
+# That writes the MCP server (command /usr/local/bin/rea, plus the ENV paths below)
+# into ~/.claude/.claude.json and the REA skill into ~/.claude/skills, both on the volume.
+#   procps     REA needs a procps `ps` on Linux to own its JADX/Apktool processes;
+#              BusyBox `ps` is not enough.
+#   openjdk21  a full JDK: REA compiles its JADX bridge at runtime (jdk.compiler).
+#   rea-agents the REA CLI + MCP server (pure Node on Linux). --engine-strict fails the
+#              build if the base image's Node is older than REA needs.
+#   JADX       jadx-headless-mcp, the Android decompiler engine REA drives
+#              (REA_JADX_MCP_JAR; hash from REA's src/android/JadxRelease.ts).
+#   Apktool    decodes APK resources and the binary manifest (REA_APKTOOL_COMMAND).
+# Not included: Ghidra (~400 MB; add it when a job needs native code), Hopper (x86_64
+# only), Frida (needs a live device).
+FROM base AS re
+ARG REA_VERSION=6.8.0
+ARG JADX_MCP_VERSION=0.7.1
+ARG JADX_MCP_SHA256=6e5eacf500b64292bfb73c49797c1958f6ee44646e43e868039ae7feb573ff75
+ARG APKTOOL_VERSION=3.0.3
+ARG APKTOOL_SHA256=dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423
+USER root
+# Base PATH omits /sbin (where apk lives), hence the full path.
+RUN /sbin/apk add --no-cache procps openjdk21 \
+ && npm install -g --engine-strict "rea-agents@${REA_VERSION}" \
+ && npm cache clean --force \
+ && mkdir -p /opt/rea \
+ && curl -fsSL -o /opt/rea/jadx-headless-mcp.jar \
+      "https://github.com/1013503897/jadx-headless-mcp/releases/download/v${JADX_MCP_VERSION}/jadx-headless-mcp-${JADX_MCP_VERSION}-all.jar" \
+ && curl -fsSL -o /opt/rea/apktool.jar \
+      "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar" \
+ && printf '%s  %s\n' "$JADX_MCP_SHA256" /opt/rea/jadx-headless-mcp.jar \
+                      "$APKTOOL_SHA256"  /opt/rea/apktool.jar | sha256sum -c - \
+ && printf '#!/bin/sh\nexec java -jar /opt/rea/apktool.jar "$@"\n' > /usr/local/bin/apktool \
+ && chmod +x /usr/local/bin/apktool
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk \
+    REA_JADX_MCP_JAR=/opt/rea/jadx-headless-mcp.jar \
+    REA_APKTOOL_COMMAND=/usr/local/bin/apktool
+USER node
+
+# Default target: the plain sandbox.
+FROM base AS default
