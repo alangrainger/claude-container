@@ -224,7 +224,7 @@ Keep a `cc-<repo>` session open while a piece of work is in flight (fine to span
 days); **close or archive it once that thread is done**, mainly to keep the claude.ai/code
 session list readable. Closing loses nothing structural - your work is in git and the
 mounted volume, not the tmux session - and relaunching is one plain-English request to the
-control session (the launcher resets the stale session pointer, so reusing a name is clean).
+control session (claude reuses the folder's Remote Control environment, so reusing a name is clean).
 
 ### Mention poller
 

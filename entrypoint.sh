@@ -149,11 +149,13 @@ CONTROL_DEBUG_FILE="/tmp/cc-control-debug.log"
 # remain-on-exit is chained onto new-session in the same tmux command sequence, so it
 # is set before tmux can reap the pane even if claude dies at once. A dead pane is kept
 # with its last screen, which the supervisor logs (see log_control_exit) - otherwise the
-# reason claude exited vanishes with the session.
+# reason claude exited vanishes with the session. The pane is 250 columns wide because
+# claude's UI erases and redraws its lines by count: a message that wraps at the default
+# 80 columns is partly erased on exit, leaving only its last few words on screen.
 launch_control() {
   local debug=""
   [ "${CONTROL_DEBUG:-0}" = "1" ] && debug="--debug-file $(printf '%q' "$CONTROL_DEBUG_FILE")"
-  tmux new-session -d -s "$CONTROL_TMUX" -c "$CONTROL_DIR" \
+  tmux new-session -d -s "$CONTROL_TMUX" -c "$CONTROL_DIR" -x 250 -y 50 \
     "exec env -u ANTHROPIC_API_KEY claude remote-control \
        --spawn session \
        --name $(printf '%q' "$CONTROL_NAME") \
@@ -168,7 +170,7 @@ last_control_tail=""
 log_control_exit() {
   local status tail
   status="$(tmux list-panes -t "=$CONTROL_TMUX" -F '#{pane_dead_status}' 2>/dev/null | head -n 1 || true)"
-  tail="$(tmux capture-pane -p -t "=$CONTROL_TMUX:" 2>/dev/null \
+  tail="$(tmux capture-pane -p -J -S -200 -t "=$CONTROL_TMUX:" 2>/dev/null \
     | grep -v -e '^[[:space:]]*$' -e '^Pane is dead' | tail -n 20 || true)"
   if [ "$tail" = "$last_control_tail" ]; then
     log "control session exited (status ${status:-?}) - same output as last time"
@@ -181,16 +183,44 @@ log_control_exit() {
   tmux kill-session -t "=$CONTROL_TMUX" 2>/dev/null || true
 }
 
-# Archive any stale bridge-pointer so claude mints a fresh web-session link.
-# The pointer persists in the bind-mounted ~/.claude but always refers to a
-# dead process after a container restart or session crash, never a live one.
-clear_control_bridge_pointer() {
+# Claude Code keeps a working dir's Remote Control environment id in
+# ~/.claude/projects/<dir-slug>/bridge-pointer.json and asks the server to REUSE that
+# environment on the next launch in that dir. Never archive or delete it: a fresh
+# registration for a folder the server still sees as served (e.g. after a container was
+# killed before claude could deregister) is refused with "This folder is already served
+# by another Claude Code on this device. Stop it first." Older versions of this script
+# archived the pointer to bridge-pointer.json.stale; restore_bridge_pointer moves such an
+# archive back so claude can reclaim its environment. Claude drops a pointer that is too
+# old by itself.
+restore_bridge_pointer() {
   local slug bp
-  slug="$(printf '%s' "$CONTROL_DIR" | sed 's#[^A-Za-z0-9]#-#g')"
+  slug="$(printf '%s' "$1" | sed 's#[^A-Za-z0-9]#-#g')"
   bp="$CONFIG_DIR/projects/$slug/bridge-pointer.json"
-  [ -f "$bp" ] || return 0
-  mv "$bp" "$bp.stale" 2>/dev/null \
-    && log "archived stale control bridge-pointer (fresh web link will be minted)"
+  [ ! -f "$bp" ] && [ -f "$bp.stale" ] || return 0
+  if mv "$bp.stale" "$bp" 2>/dev/null; then
+    log "restored archived bridge-pointer for $1 (claude will reuse its environment)"
+  fi
+}
+
+# Stop every claude session cleanly when the container stops (compose down/restart send
+# SIGTERM, then SIGKILL after 10s). A killed claude never deregisters its Remote Control
+# environment, so the server keeps the folder marked as served. Each pane runs claude
+# directly (exec), so its pane pid is claude.
+shutdown_sessions() {
+  local pids i
+  log "stopping - asking claude sessions to shut down cleanly"
+  pids="$(tmux list-panes -a -F '#{pane_dead} #{pane_pid}' 2>/dev/null | awk '$1==0{print $2}')"
+  if [ -n "$pids" ]; then
+    # shellcheck disable=SC2086
+    kill -TERM $pids 2>/dev/null || true
+    for i in $(seq 1 16); do
+      # shellcheck disable=SC2086
+      kill -0 $pids 2>/dev/null || break
+      sleep 0.5
+    done
+  fi
+  tmux kill-server 2>/dev/null || true
+  exit 0
 }
 
 mkdir -p "$CONTROL_DIR" 2>/dev/null || true
@@ -200,7 +230,8 @@ accept_remote_control
 trust_dir "$CONTROL_DIR"
 tmux start-server 2>/dev/null || true
 log "starting control session ($CONTROL_TMUX -> \"$CONTROL_NAME\") in $CONTROL_DIR"
-clear_control_bridge_pointer
+restore_bridge_pointer "$CONTROL_DIR"
+trap shutdown_sessions TERM INT
 launch_control || true
 
 # Forge poller: dispatch Forgejo @mentions and/or passed issue due dates to sessions.
@@ -228,8 +259,9 @@ while true; do
   fi
   if [ "$dead" = "gone" ]; then
     log "control session gone - relaunching"
-    clear_control_bridge_pointer
     launch_control || true
   fi
-  sleep 15
+  # Background sleep + wait, so a stop signal runs the trap at once rather than after
+  # the sleep ends.
+  sleep 15 & wait $! || true
 done

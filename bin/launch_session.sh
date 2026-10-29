@@ -135,21 +135,22 @@ repo_path_for() {
   fi
 }
 
-# Claude Code pins a working dir's web session id in
-# ~/.claude/projects/<dir-slug>/bridge-pointer.json and REUSES it on the next launch in
-# that dir. After a kill the process is gone but the file still points at the dead
-# session, so a relaunch hands back a dead URL. If the recorded pid is no longer alive,
-# archive the file so claude mints a fresh id. A live session keeps its pointer.
-reset_stale_bridge_pointer() {
-  local dir="$1" slug bp pid
-  slug="$(printf '%s' "$dir" | sed 's#[^A-Za-z0-9]#-#g')"
+# Claude Code keeps a working dir's Remote Control environment id in
+# ~/.claude/projects/<dir-slug>/bridge-pointer.json and asks the server to REUSE that
+# environment on the next launch in that dir. Never archive or delete it: a fresh
+# registration for a folder the server still sees as served (e.g. after a container was
+# killed before claude could deregister) is refused with "This folder is already served
+# by another Claude Code on this device. Stop it first." Older versions of this script
+# archived the pointer to bridge-pointer.json.stale; restore_bridge_pointer moves such an
+# archive back so claude can reclaim its environment. Claude drops a pointer that is too
+# old by itself.
+restore_bridge_pointer() {
+  local slug bp
+  slug="$(printf '%s' "$1" | sed 's#[^A-Za-z0-9]#-#g')"
   bp="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$slug/bridge-pointer.json"
-  [ -f "$bp" ] || return 0
-  pid="$(grep -oE '"pid"[[:space:]]*:[[:space:]]*[0-9]+' "$bp" 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
-  [ -n "$pid" ] || return 0
-  kill -0 "$pid" 2>/dev/null && return 0
-  if mv "$bp" "$bp.stale" 2>/dev/null; then
-    note "Reset stale bridge pointer (pid $pid gone) - a fresh web session id will be minted"
+  [ ! -f "$bp" ] && [ -f "$bp.stale" ] || return 0
+  if mv "$bp.stale" "$bp" 2>/dev/null; then
+    note "Restored archived bridge pointer - claude will reuse its environment"
   fi
 }
 
@@ -237,8 +238,8 @@ if session_exists "$tmux_session"; then
   web_name="$web_name #$n"
 fi
 
-# Committed to launching now, so clear a stale pointer first.
-reset_stale_bridge_pointer "$repo_path"
+# Committed to launching now: hand claude back any pointer an older version archived.
+restore_bridge_pointer "$repo_path"
 
 # --- launch ----------------------------------------------------------------
 # API keys are not supported for Remote Control; make sure none leaks in.
