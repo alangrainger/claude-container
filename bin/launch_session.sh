@@ -139,12 +139,22 @@ repo_path_for() {
   fi
 }
 
-# True when claude has a conversation for this dir, so --continue can reattach to it.
-# Claude keeps conversations under ~/.claude/projects/<dir-slug>/*.jsonl, where the slug
-# is the dir path with every non-alphanumeric character replaced by '-'.
+# True when claude has a conversation for this dir that --continue can reattach to.
+# Claude keeps transcripts under ~/.claude/projects/<dir-slug>/<session>.jsonl, where the
+# slug is the dir path with every non-alphanumeric character replaced by '-'. Only a
+# transcript written by an interactive claude ("entrypoint":"cli") counts: --continue
+# skips the ones a `claude remote-control` bridge wrote ("sdk-cli"), and with nothing
+# else it exits at once with "No conversation found to continue". Subagent transcripts
+# (agent-*.jsonl) never stand alone, so they are skipped too.
 has_conversation() {
-  local slug; slug="$(printf '%s' "$1" | sed 's#[^A-Za-z0-9]#-#g')"
-  ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$slug"/*.jsonl >/dev/null 2>&1
+  local slug dir f
+  slug="$(printf '%s' "$1" | sed 's#[^A-Za-z0-9]#-#g')"
+  dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$slug"
+  for f in "$dir"/*.jsonl; do
+    case "$f" in */agent-*) continue ;; esac
+    grep -q -m1 '"entrypoint":"cli"' "$f" 2>/dev/null && return 0
+  done
+  return 1
 }
 
 # --- parse args ------------------------------------------------------------
@@ -243,19 +253,65 @@ unset ANTHROPIC_API_KEY
 # its claude.ai/code entry, so a restart adds no new entry. --remote-control takes an
 # optional name, so the name must follow it directly. The pane is 250 columns wide
 # because claude's UI erases wrapped lines by count at narrower widths.
-cmd="exec env -u ANTHROPIC_API_KEY claude --remote-control $(printf '%q' "$web_name")"
-cmd="$cmd --permission-mode $(printf '%q' "$PERMISSION_MODE")"
-if [ "$continue_conv" -eq 1 ]; then cmd="$cmd --continue"; fi
-tmux new-session -d -s "$tmux_session" -c "$repo_path" -x 250 -y 50 "$cmd"
+#
+# The session is created with a placeholder and the pane then respawned into claude with
+# remain-on-exit already on, so a claude that dies at once leaves its last screen for the
+# error below instead of vanishing with the session. (Chaining set-option onto
+# new-session races a fast exit.) remain-on-exit is switched off again once claude is
+# up: a dead pane kept around would look like a live session.
+start_pane() {
+  local cmd
+  cmd="exec env -u ANTHROPIC_API_KEY claude --remote-control $(printf '%q' "$web_name")"
+  cmd="$cmd --permission-mode $(printf '%q' "$PERMISSION_MODE")"
+  if [ "$continue_conv" -eq 1 ]; then cmd="$cmd --continue"; fi
+  tmux new-session -d -s "$tmux_session" -c "$repo_path" -x 250 -y 50 'sleep 60'
+  tmux set-option -w -t "=$tmux_session:" remain-on-exit on
+  tmux respawn-pane -k -t "=$tmux_session:" -c "$repo_path" "$cmd"
+}
 
-sleep 1
-if session_exists "$tmux_session"; then
-  if [ "$continue_conv" -eq 1 ]; then
-    note "Launched $tmux_session  ($repo_path) - continuing its conversation"
+# Last screen of a dead pane, for error messages (the scrollback: tmux's "Pane is dead"
+# line pushes the real output off the visible screen).
+pane_tail() {
+  tmux capture-pane -p -J -S - -t "=$tmux_session:" 2>/dev/null \
+    | grep -v -e '^[[:space:]]*$' -e '^Pane is dead' | tail -n 8 || true
+}
+
+pane_dead() {
+  [ "$(tmux list-panes -t "=$tmux_session" -F '#{pane_dead}' 2>/dev/null | head -n 1)" = "1" ]
+}
+
+# Starts the pane and gives claude a second. Returns 0 with the pane live, or kills the
+# session and returns 1 with its last screen in DEAD_TAIL.
+DEAD_TAIL=""
+launch_or_tail() {
+  start_pane
+  sleep 1
+  pane_dead || return 0
+  DEAD_TAIL="$(pane_tail)"
+  tmux kill-session -t "=$tmux_session" 2>/dev/null || true
+  return 1
+}
+
+die_dead() {
+  die "session '$tmux_session' exited immediately - check 'claude' login (Pro/Max), workspace trust, and that ANTHROPIC_API_KEY is unset. Last output:
+$(printf '%s\n' "${DEAD_TAIL:-(no output)}" | sed 's/^/    | /')" 1
+}
+
+if ! launch_or_tail; then
+  # has_conversation can be wrong about what --continue accepts (claude's rules may
+  # change); a fresh conversation is better than no session.
+  if [ "$continue_conv" -eq 1 ] && printf '%s\n' "$DEAD_TAIL" | grep -q 'No conversation found to continue'; then
+    note "claude found no conversation to continue - starting a fresh one"
+    continue_conv=0
+    launch_or_tail || die_dead
   else
-    note "Launched $tmux_session  ($repo_path)"
+    die_dead
   fi
-  note "Open https://claude.ai/code and attach to \"$web_name\"."
-else
-  die "session '$tmux_session' exited immediately - check 'claude' login (Pro/Max), workspace trust, and that ANTHROPIC_API_KEY is unset" 1
 fi
+tmux set-option -w -t "=$tmux_session:" remain-on-exit off 2>/dev/null || true
+if [ "$continue_conv" -eq 1 ]; then
+  note "Launched $tmux_session  ($repo_path) - continuing its conversation"
+else
+  note "Launched $tmux_session  ($repo_path)"
+fi
+note "Open https://claude.ai/code and attach to \"$web_name\"."
