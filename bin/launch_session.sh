@@ -2,17 +2,20 @@
 #
 # launch_session.sh - the core session launcher and security boundary.
 #
-# Starts a `claude remote-control` session for an allowlisted name inside a detached
-# tmux session named cc-<name>, in $WORKDIR/<name>, so it shows up in claude.ai/code.
+# Starts an interactive Claude session with Remote Control on for an allowlisted name,
+# inside a detached tmux session named cc-<name>, in $WORKDIR/<name>, so it shows up in
+# claude.ai/code. The pane has a chat input, so the forge poller can type events
+# (@mentions, reminders) into the live session. When the dir already has a conversation
+# the session is started with --continue: it reattaches to that conversation and its
+# claude.ai/code entry, so a restart adds no new entry. One session per repo.
 # The always-on cc-control session calls this when you ask it (in plain English) to
 # launch something; it is also runnable via `docker compose exec claude launch_session.sh`.
 #
-# Usage: launch_session.sh <name> [--approve] [--allow-dup] [--prompt <text>]
+# Usage: launch_session.sh <name> [--approve] [--allow-dup]
 #   <name>        short name; must be in the allowlist (or use --approve to add it)
 #   --approve     add <name> to the allowlist, then launch
 #   --allow-dup   if cc-<name> already exists, start a suffixed session instead of exiting
-#   --prompt <t>  start an interactive Remote Control session that runs <t> at once;
-#                 implies --allow-dup, because a live session cannot take a prompt
+#                 (a duplicate starts a fresh conversation, never --continue)
 #
 # A session launches in $WORKDIR/<name> (WORKDIR default /workspace), except that
 # forge-org repos launch in $FORGE_WORKDIR/<name> (FORGE_WORKDIR defaults to $WORKDIR,
@@ -44,7 +47,6 @@ _forge_base=""
 GIT_BASE="${GIT_BASE:-$_forge_base}"
 GIT_TOKEN="${GIT_TOKEN:-${FORGE_TOKEN:-}}"  # falls back to the Forgejo token
 GIT_USER="${GIT_USER:-git}"               # basic-auth username paired with GIT_TOKEN
-SPAWN_MODE="session"                      # classic single-session: one tmux = one chat
 PERMISSION_MODE="${PERMISSION_MODE:-acceptEdits}"
 FORGE_WORKDIR="${FORGE_WORKDIR:-$WORKDIR}"   # where forge-org repos launch; default = $WORKDIR (no-op)
 # Display name in claude.ai/code; {repo} is replaced with the name. The tmux session
@@ -60,7 +62,7 @@ fi
 die()  { printf 'launch_session: %s\n' "$1" >&2; exit "${2:-1}"; }
 note() { printf '%s\n' "$1"; }
 
-usage() { sed -n '5,20p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '5,22p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # remote-control refuses an untrusted workspace and cannot answer the trust dialog
 # headlessly. Trust is recorded once per dir in ~/.claude.json, via jq (the image ships
@@ -137,51 +139,29 @@ repo_path_for() {
   fi
 }
 
-# Claude Code keeps a working dir's Remote Control environment id in
-# ~/.claude/projects/<dir-slug>/bridge-pointer.json and asks the server to REUSE that
-# environment on the next launch in that dir. Never archive or delete it: a fresh
-# registration for a folder the server still sees as served (e.g. after a container was
-# killed before claude could deregister) is refused with "This folder is already served
-# by another Claude Code on this device. Stop it first." Older versions of this script
-# archived the pointer to bridge-pointer.json.stale; restore_bridge_pointer moves such an
-# archive back so claude can reclaim its environment. Claude drops a pointer that is too
-# old by itself.
-restore_bridge_pointer() {
-  local slug bp
-  slug="$(printf '%s' "$1" | sed 's#[^A-Za-z0-9]#-#g')"
-  bp="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$slug/bridge-pointer.json"
-  [ ! -f "$bp" ] && [ -f "$bp.stale" ] || return 0
-  if mv "$bp.stale" "$bp" 2>/dev/null; then
-    note "Restored archived bridge pointer - claude will reuse its environment"
-  fi
+# True when claude has a conversation for this dir, so --continue can reattach to it.
+# Claude keeps conversations under ~/.claude/projects/<dir-slug>/*.jsonl, where the slug
+# is the dir path with every non-alphanumeric character replaced by '-'.
+has_conversation() {
+  local slug; slug="$(printf '%s' "$1" | sed 's#[^A-Za-z0-9]#-#g')"
+  ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$slug"/*.jsonl >/dev/null 2>&1
 }
 
 # --- parse args ------------------------------------------------------------
 repo=""
 allow_dup=0
 approve=0
-prompt=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --allow-dup) allow_dup=1 ;;
     --approve)   approve=1 ;;
-    --prompt)
-      [ $# -ge 2 ] || die "--prompt needs a value" 2
-      prompt="$2"; shift ;;
     -h|--help)   usage; exit 0 ;;
     -*)          die "unknown option: $1" 2 ;;
     *)           [ -z "$repo" ] || die "unexpected extra argument: $1" 2; repo="$1" ;;
   esac
   shift
 done
-if [ -n "$prompt" ]; then
-  case "$prompt" in
-    -*)       die "--prompt must not start with '-'" 2 ;;
-    *$'\n'*)  die "--prompt must be one line" 2 ;;
-  esac
-  allow_dup=1   # a live bridge session has no chat input, so always start a new one
-fi
-[ -n "$repo" ] || die "usage: launch_session.sh <name> [--approve] [--allow-dup] [--prompt <text>]" 2
+[ -n "$repo" ] || die "usage: launch_session.sh <name> [--approve] [--allow-dup]" 2
 
 # --- validate the name (blocks path traversal) -----------------------------
 case "$repo" in
@@ -240,6 +220,8 @@ web_name="${WEB_NAME_FORMAT//\{repo\}/$repo}"
 
 session_exists() { tmux has-session -t "=$1" 2>/dev/null; }
 
+continue_conv=0
+has_conversation "$repo_path" && continue_conv=1
 if session_exists "$tmux_session"; then
   if [ "$allow_dup" -eq 0 ]; then
     note "Already live: $tmux_session (use --allow-dup to start another). Open https://claude.ai/code"
@@ -249,38 +231,30 @@ if session_exists "$tmux_session"; then
   while session_exists "${tmux_session}-${n}"; do n=$((n+1)); done
   tmux_session="${tmux_session}-${n}"
   web_name="$web_name #$n"
+  continue_conv=0   # the live session owns the dir's conversation; a duplicate starts fresh
 fi
-
-# Committed to launching now: hand claude back any pointer an older version archived.
-restore_bridge_pointer "$repo_path"
 
 # --- launch ----------------------------------------------------------------
 # API keys are not supported for Remote Control; make sure none leaks in.
 unset ANTHROPIC_API_KEY
 
-if [ -n "$prompt" ]; then
-  # Interactive session with Remote Control on and a first prompt. A bridge pane from
-  # `claude remote-control` has no chat input, so a prompt cannot be typed into one.
-  # --remote-control takes an optional name, so the name must follow it directly.
-  cmd="exec env -u ANTHROPIC_API_KEY claude --remote-control $(printf '%q' "$web_name")"
-  cmd="$cmd --permission-mode $(printf '%q' "$PERMISSION_MODE")"
-  cmd="$cmd $(printf '%q' "$prompt")"
-  # Tag the session (@cc_prompt) so the poller's reaper knows it is a one-off task
-  # session and may stop it once idle. An explicit target: chaining set-option onto
-  # new-session resolves "current session" unreliably when stdin is not a terminal.
-  tmux new-session -d -s "$tmux_session" -c "$repo_path" -x 250 -y 50 "$cmd"
-  tmux set-option -t "=$tmux_session:" @cc_prompt 1
-else
-  cmd="exec env -u ANTHROPIC_API_KEY claude remote-control"
-  cmd="$cmd --spawn $(printf '%q' "$SPAWN_MODE")"
-  cmd="$cmd --name $(printf '%q' "$web_name")"
-  cmd="$cmd --permission-mode $(printf '%q' "$PERMISSION_MODE")"
-  tmux new-session -d -s "$tmux_session" -c "$repo_path" "$cmd"
-fi
+# Interactive session with Remote Control on. Its pane has a chat input, so the poller
+# can type events into it. --continue reattaches to the dir's latest conversation and
+# its claude.ai/code entry, so a restart adds no new entry. --remote-control takes an
+# optional name, so the name must follow it directly. The pane is 250 columns wide
+# because claude's UI erases wrapped lines by count at narrower widths.
+cmd="exec env -u ANTHROPIC_API_KEY claude --remote-control $(printf '%q' "$web_name")"
+cmd="$cmd --permission-mode $(printf '%q' "$PERMISSION_MODE")"
+if [ "$continue_conv" -eq 1 ]; then cmd="$cmd --continue"; fi
+tmux new-session -d -s "$tmux_session" -c "$repo_path" -x 250 -y 50 "$cmd"
 
 sleep 1
 if session_exists "$tmux_session"; then
-  note "Launched $tmux_session  ($repo_path)"
+  if [ "$continue_conv" -eq 1 ]; then
+    note "Launched $tmux_session  ($repo_path) - continuing its conversation"
+  else
+    note "Launched $tmux_session  ($repo_path)"
+  fi
   note "Open https://claude.ai/code and attach to \"$web_name\"."
 else
   die "session '$tmux_session' exited immediately - check 'claude' login (Pro/Max), workspace trust, and that ANTHROPIC_API_KEY is unset" 1

@@ -234,9 +234,9 @@ restore_bridge_pointer "$CONTROL_DIR"
 trap shutdown_sessions TERM INT
 launch_control || true
 
-# Forge poller: dispatch Forgejo @mentions and/or passed issue due dates to sessions.
-if [ "${ENABLE_MENTION_POLLER:-0}" = "1" ] || [ "${ENABLE_DUE_WAKEUP:-0}" = "1" ]; then
-  log "starting forge poller (mentions: ${ENABLE_MENTION_POLLER:-0}, due wake-ups: ${ENABLE_DUE_WAKEUP:-0}, interval: ${MENTION_POLLER_INTERVAL:-30}s)"
+# Forge poller: deliver Forgejo @mentions and/or reminders into repo sessions.
+if [ "${ENABLE_MENTION_POLLER:-0}" = "1" ] || [ "${ENABLE_REMINDERS:-0}" = "1" ]; then
+  log "starting forge poller (mentions: ${ENABLE_MENTION_POLLER:-0}, reminders: ${ENABLE_REMINDERS:-0}, interval: ${MENTION_POLLER_INTERVAL:-30}s)"
   ( while true; do
       mention-poller.sh || true
       log "forge poller exited - restarting in 10s"

@@ -22,27 +22,26 @@ launch_session.sh --approve <name>
 ```
 
 Then tell the user it's launched and to open the new session in claude.ai/code. Run
-`launch_session.sh --help` if you need the options. To start a session that runs a task
-at once (an interactive session with Remote Control on), pass the task as one line:
-`launch_session.sh --prompt '<text>' <name>`.
+`launch_session.sh --help` if you need the options. Each repo has one session; if the
+repo already has a conversation, the launcher continues it, so a relaunch reattaches to
+the same claude.ai/code entry.
 
 ## @mention auto-dispatch
 
 If `ENABLE_MENTION_POLLER=1` is set, a background poller watches Forgejo notifications
-for `@mention`s on issues and starts a new task session for each one via
-`launch_session.sh --approve --prompt '<task>' <repo>`. You do not need to do anything:
-the poller handles the full dispatch and marks each notification read so it isn't repeated.
-It caps auto-dispatches at `MENTION_RATE_CAP` per hour (default 10), skips its own replies
-to avoid loops, and stops task sessions once they have been idle for a while. The user
-archives finished sessions in claude.ai/code.
+for `@mention`s on issues and types a prompt for each one into the repo's one session
+(launching it first if it is not live), once that session is idle. You do not need to do
+anything: the poller handles the full delivery and marks each notification read so it
+isn't repeated. It caps deliveries at `MENTION_RATE_CAP` per hour (default 10) and skips
+its own replies to avoid loops.
 
-## Due-date wake-ups
+## Reminders
 
-If `ENABLE_DUE_WAKEUP=1` is set, the same poller scans the org hourly for open issues whose
-due date has passed and starts a new task session for each one, with a prompt naming the
-issue, then clears the date and comments on the issue. You do not need to do anything. A
-session asks for a wake-up with `forgejo issue due <repo> <n> <YYYY-MM-DD>`; it fires
-early the next day.
+If `ENABLE_REMINDERS=1` is set, the same poller delivers one-shot reminders into repo
+sessions. A session sets one with `remind <repo> '<YYYY-MM-DD HH:MM>' '<prompt>'` (times
+in the container's `TZ`); `remind list` and `remind cancel <id>` manage them. The prompt
+is typed into the repo's session once the time has passed and the session is idle. You do
+not need to do anything.
 
 ## Claude login
 

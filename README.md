@@ -105,9 +105,8 @@ nothing set you get a plain Claude sandbox. `.env` is gitignored - keep your tok
 | `GIT_BASE`, `GIT_USER`, `GIT_TOKEN`                | Auto-clone from any git host (defaults to your Forgejo org)                                     |
 | `FORGE_WORKDIR`                                    | Where forge-org repos launch; defaults to `WORKDIR`                                             |
 | `WORKDIR`, `PERMISSION_MODE`, `CONTAINER_HOSTNAME` | Where sessions run, claude's permission mode, the name shown as the session origin              |
-| `ENABLE_MENTION_POLLER`, `MENTION_POLLER_INTERVAL`, `MENTION_RATE_CAP` | Poll Forgejo for @mentions and auto-dispatch to the right `cc-<repo>` session. Requires Forgejo vars |
-| `ENABLE_DUE_WAKEUP`, `DUE_SCAN_INTERVAL`, `TZ` | Start a task session when an issue's due date passes (hourly scan). Requires Forgejo vars |
-| `PROMPT_SESSION_IDLE`, `PROMPT_SESSION_MAX_AGE` | When the poller stops finished task sessions (defaults 2h idle, 24h old) |
+| `ENABLE_MENTION_POLLER`, `MENTION_POLLER_INTERVAL`, `MENTION_RATE_CAP` | Poll Forgejo for @mentions and deliver them into the right `cc-<repo>` session. Requires Forgejo vars |
+| `ENABLE_REMINDERS`, `TZ`                           | Deliver one-shot reminders (`remind <repo> '<time>' '<prompt>'`) into the repo's session at a set minute |
 | `COMPOSE_PROFILES=ide`, `IDE_PORT`, `IDE_BIND`, `IDE_PASSWORD`, `IDE_AUTH` | Optional browser IDE (code-server) sharing `/workspace`, see below |
 
 See [`.env.example`](.env.example) for the full list with examples.
@@ -227,47 +226,58 @@ session list readable. Closing loses nothing structural - your work is in git an
 mounted volume, not the tmux session - and relaunching is one plain-English request to the
 control session (claude reuses the folder's Remote Control environment, so reusing a name is clean).
 
+### One session per repo
+
+Each repo has one session, `cc-<repo>`: an interactive Claude session with Remote Control
+on, so it has a chat input and shows in claude.ai/code. Events from the poller below are
+typed into that session. When the repo's folder already has a conversation, the launcher
+starts the session with `--continue`, so a container restart reattaches each session to
+its existing claude.ai/code entry instead of adding a new one. Run `/clear` in a session
+to start a fresh conversation; the next launch continues from that one.
+
 ### Mention poller
 
 Set `ENABLE_MENTION_POLLER=1` and the container will watch your Forgejo notifications for
-`@mention`s on issues. When one arrives, the poller starts a new session for that repo via
-`launch_session.sh --approve --prompt '<task>' <repo>`: an interactive Claude session with
-Remote Control on that runs the prompt at once and shows in claude.ai/code. The session
-reads the issue, does the work, and replies with a comment. (A `cc-<repo>` bridge session
-cannot take a typed prompt, so each event gets its own session.)
+`@mention`s on issues. When one arrives, the poller types a prompt naming the issue into
+the repo's session (launching it first via `launch_session.sh --approve <repo>` if it is
+not live). The session reads the issue, does the work, and replies with a comment.
+
+The prompt is typed only while the session is idle: a message typed during a turn is
+consumed mid-turn and derails the running work. A busy session keeps the event for the
+next tick (every `MENTION_POLLER_INTERVAL` seconds, default 30), so an event can arrive
+minutes late. The notification is marked read only after a successful delivery.
+
+Idle is known from claude itself, not the screen (which shows no busy marker while
+claude streams text): hooks in the image's managed settings (`bin/cc-session-state.sh`)
+set a flag on the session's tmux session for the length of each turn. Claude's `Stop`
+hook does not fire after a user interrupt, so a flag that is still set while the screen
+shows a finished or interrupted turn is treated as stale. A session waiting on a
+permission or question dialog counts as busy, so answer the dialog in claude.ai/code
+to let queued events through.
 
 Requires `FORGE_HOST`, `FORGE_ORG`, and `FORGE_TOKEN`. A rate cap (`MENTION_RATE_CAP`,
-default 10 per hour) and self-reply loop guard are built in. See `.env.example` for all
-options.
+default 10 per hour, counting deliveries and launches) and self-reply loop guard are
+built in. See `.env.example` for all options.
 
-Task sessions do not exit when their work is done, so the poller reaps them: a session
-started with `--prompt` is stopped cleanly once it has produced no output for
-`PROMPT_SESSION_IDLE` seconds (default 2 hours) or is older than `PROMPT_SESSION_MAX_AGE`
-(default 24 hours). Archive the finished session in claude.ai/code whenever you like.
+### Reminders
 
-### Due-date wake-ups
-
-A session can ask to be woken later, e.g. to collect data that only exists after a given
-day. It sets a due date on the Forgejo issue it is working from:
+A session can ask for a prompt to be delivered to its repo later, at a set minute, e.g.
+to collect data that only exists after a given time:
 
 ```
-forgejo issue due <repo> <n> 2026-11-05     # or `clear` to cancel
+remind <repo> '2026-11-05 09:30' 'Read the charge curve for issue 16 and record it.'
+remind list
+remind cancel <id>
 ```
 
-With `ENABLE_DUE_WAKEUP=1`, the same poller scans your org once an hour
-(`DUE_SCAN_INTERVAL`) for open issues whose due date has passed. For each one it starts a
-new task session for the repo (`launch_session.sh --approve --prompt '<wake-up>' <repo>`)
-whose prompt names the issue, waits until the session reports Remote Control as active,
-then clears the due date and leaves an audit comment naming the session. The date is
-cleared only after a successful launch, so a failed wake-up retries on the next scan rather
-than being lost. Finished sessions are reaped as described under "Mention poller".
-
-Due dates have day precision: Forgejo stores the end of that day in the container's time
-zone, so the wake-up fires in the first scan after midnight the next day. Set `TZ` in
-`.env` (default UTC) so "end of day" means yours, and set the date a day before the real
-deadline. Wake-ups share `MENTION_RATE_CAP` with mentions, and each one starts a full
-session, so ask for one only when a fixed time matters. Nothing is stored in the container:
-the issue holds the when and the why, and you can change or clear it in the Forgejo UI.
+Times are read and shown in the container's `TZ` (set it in `.env`; default UTC). The
+prompt is one line and must not start with `-`. Reminders live in
+`~/.claude/reminders.json` on the volume, so they survive a restart; `remind list` is
+the only view of them. With `ENABLE_REMINDERS=1`, the poller checks the file every tick
+and delivers each due reminder into the repo's session the same way as a mention,
+removing it only after a successful delivery, so a busy session or a failed launch retries
+on the next tick. Reminders need no forge: `ENABLE_REMINDERS=1` works without the
+`FORGE_*` vars. They share `MENTION_RATE_CAP` with mentions.
 
 ## Web IDE (optional)
 
@@ -341,9 +351,11 @@ Notes:
 | `.env.example`              | Template for your gitignored `.env`                             |
 | `scripts/first-setup.sh`    | One-time login + optional setup-repo hook                       |
 | `scripts/reauth.sh`         | Re-login from the docker host once the login has lapsed (no setup-repo re-run) |
-| `bin/launch_session.sh`     | Starts (and clones) a session for a repo; `--prompt` runs a task at once |
+| `bin/launch_session.sh`     | Starts (and clones) the one session for a repo; `--continue`s its conversation |
 | `bin/forgejo`               | The Forgejo API wrapper                                         |
-| `bin/mention-poller.sh`     | The forge poller: dispatches @mentions and passed issue due dates to sessions |
+| `bin/mention-poller.sh`     | The forge poller: delivers @mentions and reminders into repo sessions |
+| `bin/remind.sh`             | `remind`: add, list and cancel one-shot reminders the poller delivers |
+| `bin/cc-session-state.sh`   | Hook target: keeps the per-session busy flag the poller reads   |
 | `bin/relogin.sh`            | Renews the Claude login from any session, no terminal needed (+ the expiry reminder hook) |
 | `.github/workflows/ci.yaml` | Builds + publishes the image to GHCR on a version tag           |
 

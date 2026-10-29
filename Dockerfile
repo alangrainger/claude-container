@@ -97,6 +97,8 @@ COPY scripts/reauth.sh /usr/local/bin/reauth.sh
 COPY bin/launch_session.sh  /usr/local/bin/launch_session.sh
 COPY bin/forgejo             /usr/local/bin/forgejo
 COPY bin/mention-poller.sh  /usr/local/bin/mention-poller.sh
+COPY bin/remind.sh          /usr/local/bin/remind
+COPY bin/cc-session-state.sh /usr/local/bin/cc-session-state.sh
 COPY bin/relogin.sh         /usr/local/bin/relogin.sh
 # Instructions the control session reads (entrypoint installs it as CONTROL_DIR/CLAUDE.md
 # so the agent knows it can launch other sessions via launch_session.sh).
@@ -104,16 +106,26 @@ COPY control/CLAUDE.md      /usr/local/share/control-CLAUDE.md
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/first-setup.sh \
              /usr/local/bin/reauth.sh \
              /usr/local/bin/launch_session.sh /usr/local/bin/forgejo \
-             /usr/local/bin/mention-poller.sh /usr/local/bin/relogin.sh
+             /usr/local/bin/mention-poller.sh /usr/local/bin/remind \
+             /usr/local/bin/cc-session-state.sh /usr/local/bin/relogin.sh
 
 # Container-wide Claude Code settings. Managed settings ship in the image rather than the
 # ~/.claude volume, so an existing volume picks them up on the next pull and a SETUP_REPO
 # installer that rewrites settings.json cannot drop them; their hooks run alongside the
-# user's own. The SessionStart hook is silent until the login is within 7 days of its fixed
-# 30-day expiry, then has the session offer to renew it (see bin/relogin.sh).
+# user's own. The relogin SessionStart hook is silent until the login is within 7 days of
+# its fixed 30-day expiry, then has the session offer to renew it (see bin/relogin.sh).
+# The cc-session-state hooks keep a busy flag on the session's tmux session for the
+# forge poller (see bin/cc-session-state.sh); outside tmux they are no-ops.
 RUN mkdir -p /etc/claude-code \
  && printf '%s\n' \
-      '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/usr/local/bin/relogin.sh nag"}]}]}}' \
+      '{"hooks":{' \
+      '"SessionStart":[{"hooks":[{"type":"command","command":"/usr/local/bin/relogin.sh nag"},{"type":"command","command":"/usr/local/bin/cc-session-state.sh idle"}]}],' \
+      '"UserPromptSubmit":[{"hooks":[{"type":"command","command":"/usr/local/bin/cc-session-state.sh busy"}]}],' \
+      '"PreToolUse":[{"hooks":[{"type":"command","command":"/usr/local/bin/cc-session-state.sh busy"}]}],' \
+      '"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/cc-session-state.sh idle"}]}],' \
+      '"SessionEnd":[{"hooks":[{"type":"command","command":"/usr/local/bin/cc-session-state.sh idle"}]}],' \
+      '"Notification":[{"hooks":[{"type":"command","command":"/usr/local/bin/cc-session-state.sh notify"}]}]' \
+      '}}' \
       > /etc/claude-code/managed-settings.json
 
 ENV HOME=/home/node \

@@ -15,7 +15,6 @@
 #   forgejo issue create  <repo> <title> [body]
 #   forgejo issue comment <repo> <n> <body>
 #   forgejo issue close   <repo> <n>
-#   forgejo issue due     <repo> <n> <YYYY-MM-DD>|clear  # set/clear the due date
 #   forgejo push  [-C <dir>] <repo> <message> <path>...  # commit file(s) in ONE commit
 #   forgejo pull  [-C <dir>] [<repo>] [<branch>]         # bring a local clone up to date
 #   forgejo api <METHOD> <path> [json]      # raw escape hatch, e.g.
@@ -58,7 +57,6 @@ forgejo - tight wrapper for the Forgejo API (one rule: Bash(forgejo:*)).
   forgejo issue create  <repo> <title> [body]
   forgejo issue comment <repo> <n> <body>
   forgejo issue close   <repo> <n>
-  forgejo issue due     <repo> <n> <YYYY-MM-DD>|clear  # set/clear the due date
   forgejo push  [-C <dir>] <repo> <message> <path>...  # commit file(s) in one commit
   forgejo pull  [-C <dir>] [<repo>] [<branch>]         # bring a local clone up to date
   forgejo api <METHOD> <path> [json]      # raw escape hatch
@@ -139,8 +137,7 @@ issue_list() {
   done
   _api GET "/repos/$repo/issues?state=$state&type=issues&limit=50" \
     | jq -r '.[] | "#\(.number)\t\(.state)\t\(.title)" +
-        (if (.labels|length) > 0 then "  [" + (.labels|map(.name)|join(", ")) + "]" else "" end) +
-        (if .due_date then "  due " + .due_date[:10] else "" end)'
+        (if (.labels|length) > 0 then "  [" + (.labels|map(.name)|join(", ")) + "]" else "" end)'
 }
 
 issue_view() {
@@ -153,7 +150,6 @@ issue_view() {
     "author:  \(.user.login)",
     "created: \(.created_at)",
     (if (.labels|length) > 0 then "labels:  " + (.labels|map(.name)|join(", ")) else empty end),
-    (if .due_date then "due:     \(.due_date[:10])" else empty end),
     "url:     \(.html_url)",
     "",
     (.body // "(no description)")'
@@ -194,39 +190,14 @@ issue_close() {
     | jq -r '"closed #\(.number): \(.title)"'
 }
 
-# forgejo issue due <repo> <n> <YYYY-MM-DD>|clear
-# Sets or clears the due date. Forgejo stores the end of that day in the offset
-# given, so the date is sent with this host's UTC offset. The container's poller
-# wakes a session in its first hourly scan after that moment.
-issue_due() {
-  local repo n when off json
-  repo="$(resolve_repo "${1:?usage: forgejo issue due <repo> <n> <YYYY-MM-DD>|clear}")"
-  n="${2:?usage: forgejo issue due <repo> <n> <YYYY-MM-DD>|clear}"
-  when="${3:?usage: forgejo issue due <repo> <n> <YYYY-MM-DD>|clear}"
-  if [ "$when" = "clear" ]; then
-    json='{"unset_due_date":true}'
-  else
-    case "$when" in
-      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
-      *) die "issue due: date must be YYYY-MM-DD or 'clear'" ;;
-    esac
-    off="$(date +%z)"              # +1300
-    off="${off:0:3}:${off:3:2}"    # +13:00
-    json="$(jq -n --arg d "${when}T00:00:00${off}" '{due_date:$d}')"
-  fi
-  _api PATCH "/repos/$repo/issues/$n" "$json" \
-    | jq -r '"due date on #\(.number): \(.due_date // "none")"'
-}
-
 issue() {
-  local sub="${1:?usage: forgejo issue <list|view|create|comment|close|due> ...}"; shift
+  local sub="${1:?usage: forgejo issue <list|view|create|comment|close> ...}"; shift
   case "$sub" in
     list)    issue_list "$@" ;;
     view)    issue_view "$@" ;;
     create)  issue_create "$@" ;;
     comment) issue_comment "$@" ;;
     close)   issue_close "$@" ;;
-    due)     issue_due "$@" ;;
     *) die "unknown issue subcommand: $sub" ;;
   esac
 }
