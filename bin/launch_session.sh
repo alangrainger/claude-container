@@ -7,10 +7,12 @@
 # The always-on cc-control session calls this when you ask it (in plain English) to
 # launch something; it is also runnable via `docker compose exec claude launch_session.sh`.
 #
-# Usage: launch_session.sh <name> [--approve] [--allow-dup]
+# Usage: launch_session.sh <name> [--approve] [--allow-dup] [--prompt <text>]
 #   <name>        short name; must be in the allowlist (or use --approve to add it)
 #   --approve     add <name> to the allowlist, then launch
 #   --allow-dup   if cc-<name> already exists, start a suffixed session instead of exiting
+#   --prompt <t>  start an interactive Remote Control session that runs <t> at once;
+#                 implies --allow-dup, because a live session cannot take a prompt
 #
 # A session launches in $WORKDIR/<name> (WORKDIR default /workspace), except that
 # forge-org repos launch in $FORGE_WORKDIR/<name> (FORGE_WORKDIR defaults to $WORKDIR,
@@ -58,7 +60,7 @@ fi
 die()  { printf 'launch_session: %s\n' "$1" >&2; exit "${2:-1}"; }
 note() { printf '%s\n' "$1"; }
 
-usage() { sed -n '5,18p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '5,20p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # remote-control refuses an untrusted workspace and cannot answer the trust dialog
 # headlessly. Trust is recorded once per dir in ~/.claude.json, via jq (the image ships
@@ -158,17 +160,28 @@ restore_bridge_pointer() {
 repo=""
 allow_dup=0
 approve=0
+prompt=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --allow-dup) allow_dup=1 ;;
     --approve)   approve=1 ;;
+    --prompt)
+      [ $# -ge 2 ] || die "--prompt needs a value" 2
+      prompt="$2"; shift ;;
     -h|--help)   usage; exit 0 ;;
     -*)          die "unknown option: $1" 2 ;;
     *)           [ -z "$repo" ] || die "unexpected extra argument: $1" 2; repo="$1" ;;
   esac
   shift
 done
-[ -n "$repo" ] || die "usage: launch_session.sh <name> [--approve] [--allow-dup]" 2
+if [ -n "$prompt" ]; then
+  case "$prompt" in
+    -*)       die "--prompt must not start with '-'" 2 ;;
+    *$'\n'*)  die "--prompt must be one line" 2 ;;
+  esac
+  allow_dup=1   # a live bridge session has no chat input, so always start a new one
+fi
+[ -n "$repo" ] || die "usage: launch_session.sh <name> [--approve] [--allow-dup] [--prompt <text>]" 2
 
 # --- validate the name (blocks path traversal) -----------------------------
 case "$repo" in
@@ -245,12 +258,25 @@ restore_bridge_pointer "$repo_path"
 # API keys are not supported for Remote Control; make sure none leaks in.
 unset ANTHROPIC_API_KEY
 
-cmd="exec env -u ANTHROPIC_API_KEY claude remote-control"
-cmd="$cmd --spawn $(printf '%q' "$SPAWN_MODE")"
-cmd="$cmd --name $(printf '%q' "$web_name")"
-cmd="$cmd --permission-mode $(printf '%q' "$PERMISSION_MODE")"
-
-tmux new-session -d -s "$tmux_session" -c "$repo_path" "$cmd"
+if [ -n "$prompt" ]; then
+  # Interactive session with Remote Control on and a first prompt. A bridge pane from
+  # `claude remote-control` has no chat input, so a prompt cannot be typed into one.
+  # --remote-control takes an optional name, so the name must follow it directly.
+  cmd="exec env -u ANTHROPIC_API_KEY claude --remote-control $(printf '%q' "$web_name")"
+  cmd="$cmd --permission-mode $(printf '%q' "$PERMISSION_MODE")"
+  cmd="$cmd $(printf '%q' "$prompt")"
+  # Tag the session (@cc_prompt) so the poller's reaper knows it is a one-off task
+  # session and may stop it once idle. An explicit target: chaining set-option onto
+  # new-session resolves "current session" unreliably when stdin is not a terminal.
+  tmux new-session -d -s "$tmux_session" -c "$repo_path" -x 250 -y 50 "$cmd"
+  tmux set-option -t "=$tmux_session:" @cc_prompt 1
+else
+  cmd="exec env -u ANTHROPIC_API_KEY claude remote-control"
+  cmd="$cmd --spawn $(printf '%q' "$SPAWN_MODE")"
+  cmd="$cmd --name $(printf '%q' "$web_name")"
+  cmd="$cmd --permission-mode $(printf '%q' "$PERMISSION_MODE")"
+  tmux new-session -d -s "$tmux_session" -c "$repo_path" "$cmd"
+fi
 
 sleep 1
 if session_exists "$tmux_session"; then

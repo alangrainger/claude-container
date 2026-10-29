@@ -22,24 +22,27 @@ launch_session.sh --approve <name>
 ```
 
 Then tell the user it's launched and to open the new session in claude.ai/code. Run
-`launch_session.sh --help` if you need the options.
+`launch_session.sh --help` if you need the options. To start a session that runs a task
+at once (an interactive session with Remote Control on), pass the task as one line:
+`launch_session.sh --prompt '<text>' <name>`.
 
 ## @mention auto-dispatch
 
 If `ENABLE_MENTION_POLLER=1` is set, a background poller watches Forgejo notifications
-for `@mention`s on issues and injects them directly into the relevant `cc-<repo>` session -
-or spawns one via `launch_session.sh --approve <repo>` if that repo isn't open yet. You do
-not need to do anything: the poller handles the full dispatch and marks each notification
-read so it isn't repeated. It caps auto-dispatches at `MENTION_RATE_CAP` per hour (default
-10) and skips its own replies to avoid loops.
+for `@mention`s on issues and starts a new task session for each one via
+`launch_session.sh --approve --prompt '<task>' <repo>`. You do not need to do anything:
+the poller handles the full dispatch and marks each notification read so it isn't repeated.
+It caps auto-dispatches at `MENTION_RATE_CAP` per hour (default 10), skips its own replies
+to avoid loops, and stops task sessions once they have been idle for a while. The user
+archives finished sessions in claude.ai/code.
 
 ## Due-date wake-ups
 
 If `ENABLE_DUE_WAKEUP=1` is set, the same poller scans the org hourly for open issues whose
-due date has passed and wakes the relevant `cc-<repo>` session with a prompt naming the
-issue (spawning the session first if needed), then clears the date and comments on the
-issue. You do not need to do anything. A session asks for a wake-up with
-`forgejo issue due <repo> <n> <YYYY-MM-DD>`; it fires early the next day.
+due date has passed and starts a new task session for each one, with a prompt naming the
+issue, then clears the date and comments on the issue. You do not need to do anything. A
+session asks for a wake-up with `forgejo issue due <repo> <n> <YYYY-MM-DD>`; it fires
+early the next day.
 
 ## Claude login
 

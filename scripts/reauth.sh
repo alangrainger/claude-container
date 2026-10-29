@@ -26,7 +26,8 @@ SESSION="${REAUTH_TMUX:-cc-login}"
 PANE_WIDTH="${REAUTH_PANE_WIDTH:-1000}"
 PANE_HEIGHT="${REAUTH_PANE_HEIGHT:-50}"
 
-pane() { tmux capture-pane -p -J -t "=$SESSION" 2>/dev/null || true; }
+# The trailing colon makes this a window target; capture-pane rejects a bare "=name".
+pane() { tmux capture-pane -p -J -t "=$SESSION:" 2>/dev/null || true; }
 
 session_exists() { tmux has-session -t "=$SESSION" 2>/dev/null; }
 
