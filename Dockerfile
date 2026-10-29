@@ -39,7 +39,7 @@ ARG CLAUDE_CODE_VERSION=latest
 # Puppeteer's own glibc download would not run here, hence PUPPETEER_* below. The flags
 # it needs to run under this container's hardening live in /etc/chromium (see below).
 # font-noto covers Latin/Greek/Cyrillic text; add font-noto-cjk for CJK if you need it.
-RUN apk add --no-cache bash tmux git jq curl ripgrep ca-certificates python3 py3-pip github-cli \
+RUN apk add --no-cache bash tmux git jq curl ripgrep ca-certificates tzdata python3 py3-pip github-cli \
     docker-cli docker-cli-compose sqlite openssl \
     chromium font-noto font-noto-emoji \
  && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \

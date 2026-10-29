@@ -170,12 +170,12 @@ echo "claude-container: starting control session ($CONTROL_TMUX -> \"$CONTROL_NA
 clear_control_bridge_pointer
 launch_control || true
 
-# Mention poller: watch Forgejo notifications for @mentions and dispatch to sessions.
-if [ "${ENABLE_MENTION_POLLER:-0}" = "1" ]; then
-  echo "claude-container: starting mention poller (interval: ${MENTION_POLLER_INTERVAL:-30}s)"
+# Forge poller: dispatch Forgejo @mentions and/or passed issue due dates to sessions.
+if [ "${ENABLE_MENTION_POLLER:-0}" = "1" ] || [ "${ENABLE_DUE_WAKEUP:-0}" = "1" ]; then
+  echo "claude-container: starting forge poller (mentions: ${ENABLE_MENTION_POLLER:-0}, due wake-ups: ${ENABLE_DUE_WAKEUP:-0}, interval: ${MENTION_POLLER_INTERVAL:-30}s)"
   ( while true; do
       mention-poller.sh || true
-      echo "claude-container: mention poller exited - restarting in 10s"
+      echo "claude-container: forge poller exited - restarting in 10s"
       sleep 10
     done ) &
 fi

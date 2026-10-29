@@ -106,6 +106,7 @@ nothing set you get a plain Claude sandbox. `.env` is gitignored - keep your tok
 | `FORGE_WORKDIR`                                    | Where forge-org repos launch; defaults to `WORKDIR`                                             |
 | `WORKDIR`, `PERMISSION_MODE`, `CONTAINER_HOSTNAME` | Where sessions run, claude's permission mode, the name shown as the session origin              |
 | `ENABLE_MENTION_POLLER`, `MENTION_POLLER_INTERVAL`, `MENTION_RATE_CAP` | Poll Forgejo for @mentions and auto-dispatch to the right `cc-<repo>` session. Requires Forgejo vars |
+| `ENABLE_DUE_WAKEUP`, `DUE_SCAN_INTERVAL`, `TZ` | Wake a `cc-<repo>` session when an issue's due date passes (hourly scan). Requires Forgejo vars |
 | `COMPOSE_PROFILES=ide`, `IDE_PORT`, `IDE_BIND`, `IDE_PASSWORD`, `IDE_AUTH` | Optional browser IDE (code-server) sharing `/workspace`, see below |
 
 See [`.env.example`](.env.example) for the full list with examples.
@@ -236,6 +237,29 @@ Requires `FORGE_HOST`, `FORGE_ORG`, and `FORGE_TOKEN`. A rate cap (`MENTION_RATE
 default 10 per hour) and self-reply loop guard are built in. See `.env.example` for all
 options.
 
+### Due-date wake-ups
+
+A session can ask to be woken later, e.g. to collect data that only exists after a given
+day. It sets a due date on the Forgejo issue it is working from:
+
+```
+forgejo issue due <repo> <n> 2026-11-05     # or `clear` to cancel
+```
+
+With `ENABLE_DUE_WAKEUP=1`, the same poller scans your org once an hour
+(`DUE_SCAN_INTERVAL`) for open issues whose due date has passed. For each one it makes sure
+`cc-<repo>` is live (spawning it via `launch_session.sh --approve <repo>` if not), types a
+prompt naming the issue, then clears the due date and leaves an audit comment on the issue.
+The date is cleared only after a successful dispatch, so a failed wake-up retries on the
+next scan rather than being lost.
+
+Due dates have day precision: Forgejo stores the end of that day in the container's time
+zone, so the wake-up fires in the first scan after midnight the next day. Set `TZ` in
+`.env` (default UTC) so "end of day" means yours, and set the date a day before the real
+deadline. Wake-ups share `MENTION_RATE_CAP` with mentions, and each one starts a full
+session, so ask for one only when a fixed time matters. Nothing is stored in the container:
+the issue holds the when and the why, and you can change or clear it in the Forgejo UI.
+
 ## Web IDE (optional)
 
 A [code-server](https://github.com/coder/code-server) (VS Code in the browser) sidecar
@@ -310,7 +334,7 @@ Notes:
 | `scripts/reauth.sh`         | Re-login from the docker host once the login has lapsed (no setup-repo re-run) |
 | `bin/launch_session.sh`     | Starts (and clones) a session for a repo                        |
 | `bin/forgejo`               | The Forgejo API wrapper                                         |
-| `bin/mention-poller.sh`     | Polls Forgejo notifications and dispatches @mentions to sessions |
+| `bin/mention-poller.sh`     | The forge poller: dispatches @mentions and passed issue due dates to sessions |
 | `bin/relogin.sh`            | Renews the Claude login from any session, no terminal needed (+ the expiry reminder hook) |
 | `.github/workflows/ci.yaml` | Builds + publishes the image to GHCR on a version tag           |
 

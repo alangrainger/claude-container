@@ -33,6 +33,14 @@ not need to do anything: the poller handles the full dispatch and marks each not
 read so it isn't repeated. It caps auto-dispatches at `MENTION_RATE_CAP` per hour (default
 10) and skips its own replies to avoid loops.
 
+## Due-date wake-ups
+
+If `ENABLE_DUE_WAKEUP=1` is set, the same poller scans the org hourly for open issues whose
+due date has passed and wakes the relevant `cc-<repo>` session with a prompt naming the
+issue (spawning the session first if needed), then clears the date and comments on the
+issue. You do not need to do anything. A session asks for a wake-up with
+`forgejo issue due <repo> <n> <YYYY-MM-DD>`; it fires early the next day.
+
 ## Claude login
 
 The container's Claude login lasts a fixed 30 days from the last browser login (using it
