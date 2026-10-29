@@ -33,7 +33,7 @@ DRY_RUN="${DRY_RUN:-0}"
 FORGE_ORG="${FORGE_ORG:-}"
 FORGE_HOST="${FORGE_HOST:-}"
 
-log() { printf '[mention-poller] %s\n' "$*"; }
+log() { printf '%s [mention-poller] %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*"; }
 
 if [ -z "$FORGE_ORG" ]; then
   log "FORGE_ORG not set - required to scope the poller to your org. Exiting."

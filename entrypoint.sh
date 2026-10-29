@@ -6,6 +6,9 @@
 #
 set -euo pipefail
 
+# Every container log line carries a local timestamp (TZ from .env, else UTC).
+log() { printf '%s claude-container: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$*"; }
+
 HOME_DIR="${HOME:-/home/node}"
 CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME_DIR/.claude}"
 CRED="$CONFIG_DIR/.credentials.json"
@@ -104,7 +107,7 @@ EOF
   # Still valid - warn early, while there is time to act without being locked out.
   left_d=$(( (exp_s - now_s) / 86400 ))
   if [ "$left_d" -le 3 ]; then
-    echo "claude-container: WARNING - Claude login expires in ~${left_d}d. Run 'docker compose exec claude reauth.sh' to renew."
+    log "WARNING - Claude login expires in ~${left_d}d. Run 'docker compose exec claude reauth.sh' to renew."
   fi
 }
 check_credential_expiry
@@ -140,12 +143,42 @@ accept_remote_control() {
   fi
 }
 
+# CONTROL_DEBUG=1 adds claude's own debug log at this path (tmpfs, gone on restart).
+CONTROL_DEBUG_FILE="/tmp/cc-control-debug.log"
+
+# remain-on-exit is chained onto new-session in the same tmux command sequence, so it
+# is set before tmux can reap the pane even if claude dies at once. A dead pane is kept
+# with its last screen, which the supervisor logs (see log_control_exit) - otherwise the
+# reason claude exited vanishes with the session.
 launch_control() {
+  local debug=""
+  [ "${CONTROL_DEBUG:-0}" = "1" ] && debug="--debug-file $(printf '%q' "$CONTROL_DEBUG_FILE")"
   tmux new-session -d -s "$CONTROL_TMUX" -c "$CONTROL_DIR" \
     "exec env -u ANTHROPIC_API_KEY claude remote-control \
        --spawn session \
        --name $(printf '%q' "$CONTROL_NAME") \
-       --permission-mode $(printf '%q' "$PERMISSION_MODE")"
+       --permission-mode $(printf '%q' "$PERMISSION_MODE") $debug" \; \
+    set-option -w remain-on-exit on
+}
+
+# Log why cc-control died: exit status plus the last lines claude left on screen. A
+# crash loop repeats the same screen every 15s, so the tail is logged only when it
+# changes; repeats get one line.
+last_control_tail=""
+log_control_exit() {
+  local status tail
+  status="$(tmux list-panes -t "=$CONTROL_TMUX" -F '#{pane_dead_status}' 2>/dev/null | head -n 1 || true)"
+  tail="$(tmux capture-pane -p -t "=$CONTROL_TMUX:" 2>/dev/null \
+    | grep -v -e '^[[:space:]]*$' -e '^Pane is dead' | tail -n 20 || true)"
+  if [ "$tail" = "$last_control_tail" ]; then
+    log "control session exited (status ${status:-?}) - same output as last time"
+  else
+    log "control session exited (status ${status:-?}) - last output:"
+    printf '%s\n' "${tail:-(no output)}" | sed 's/^/    | /'
+    last_control_tail="$tail"
+  fi
+  [ "${CONTROL_DEBUG:-0}" = "1" ] && log "debug log: $CONTROL_DEBUG_FILE"
+  tmux kill-session -t "=$CONTROL_TMUX" 2>/dev/null || true
 }
 
 # Archive any stale bridge-pointer so claude mints a fresh web-session link.
@@ -157,7 +190,7 @@ clear_control_bridge_pointer() {
   bp="$CONFIG_DIR/projects/$slug/bridge-pointer.json"
   [ -f "$bp" ] || return 0
   mv "$bp" "$bp.stale" 2>/dev/null \
-    && echo "claude-container: archived stale control bridge-pointer (fresh web link will be minted)"
+    && log "archived stale control bridge-pointer (fresh web link will be minted)"
 }
 
 mkdir -p "$CONTROL_DIR" 2>/dev/null || true
@@ -166,16 +199,16 @@ cp -f /usr/local/share/control-CLAUDE.md "$CONTROL_DIR/CLAUDE.md" 2>/dev/null ||
 accept_remote_control
 trust_dir "$CONTROL_DIR"
 tmux start-server 2>/dev/null || true
-echo "claude-container: starting control session ($CONTROL_TMUX -> \"$CONTROL_NAME\") in $CONTROL_DIR"
+log "starting control session ($CONTROL_TMUX -> \"$CONTROL_NAME\") in $CONTROL_DIR"
 clear_control_bridge_pointer
 launch_control || true
 
 # Forge poller: dispatch Forgejo @mentions and/or passed issue due dates to sessions.
 if [ "${ENABLE_MENTION_POLLER:-0}" = "1" ] || [ "${ENABLE_DUE_WAKEUP:-0}" = "1" ]; then
-  echo "claude-container: starting forge poller (mentions: ${ENABLE_MENTION_POLLER:-0}, due wake-ups: ${ENABLE_DUE_WAKEUP:-0}, interval: ${MENTION_POLLER_INTERVAL:-30}s)"
+  log "starting forge poller (mentions: ${ENABLE_MENTION_POLLER:-0}, due wake-ups: ${ENABLE_DUE_WAKEUP:-0}, interval: ${MENTION_POLLER_INTERVAL:-30}s)"
   ( while true; do
       mention-poller.sh || true
-      echo "claude-container: forge poller exited - restarting in 10s"
+      log "forge poller exited - restarting in 10s"
       sleep 10
     done ) &
 fi
@@ -183,8 +216,18 @@ fi
 # Supervise: keep cc-control alive (it is the always-on console you launch others from)
 # and keep the container running. A dead control session is relaunched.
 while true; do
-  if ! tmux has-session -t "=$CONTROL_TMUX" 2>/dev/null; then
-    echo "claude-container: control session gone - relaunching"
+  # tmux 3.4's display-message succeeds with empty output for a missing session, so
+  # existence comes from has-session and the dead flag from list-panes.
+  dead=gone
+  if tmux has-session -t "=$CONTROL_TMUX" 2>/dev/null; then
+    dead="$(tmux list-panes -t "=$CONTROL_TMUX" -F '#{pane_dead}' 2>/dev/null | head -n 1 || true)"
+  fi
+  if [ "$dead" = "1" ]; then
+    log_control_exit
+    dead=gone
+  fi
+  if [ "$dead" = "gone" ]; then
+    log "control session gone - relaunching"
     clear_control_bridge_pointer
     launch_control || true
   fi
