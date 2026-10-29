@@ -98,18 +98,34 @@ pane_state() {
     }'
 }
 
+# input_box_holds <tmux-session> <text>
+# True while the input box (the LAST ❯ line, see pane_state) still shows the start of
+# <text>. A submitted message moves up into the transcript and the box goes empty.
+input_box_holds() {
+  tmux capture-pane -t "=$1:" -p 2>/dev/null | HEAD="${2:0:40}" awk '
+    /^❯/ { last = $0 }
+    END { exit !(index(last, ENVIRON["HEAD"]) > 0) }'
+}
+
 # deliver <repo> <prompt>
 # Types <prompt> into the repo's live session when it is idle. Starts the session when
-# it is not live. Returns 1 when the session is not ready or busy, so the caller keeps
-# the event and retries next tick. A launch and a delivery each count against the
-# hourly cap, so a session that dies at once cannot be relaunched without limit.
+# it is not live. Returns 1 when the session is not ready, busy or did not submit the
+# text, so the caller keeps the event and retries next tick. A launch and a delivery
+# attempt each count against the hourly cap, so a session that dies at once or never
+# submits cannot be poked without limit.
 # Busy comes from the tmux session option @cc_busy, which claude's own hooks set for
 # the length of a turn (bin/cc-session-state.sh): the screen shows no busy marker while
 # claude streams text, so it cannot be read from the pane. The screen is only the
 # backstop for a stale flag: Stop does not fire after a user interrupt, so a flag that
 # is still set while the screen shows a finished or interrupted turn is ignored.
+# The text and the Enter are sent apart, and the Enter is checked. Sent together they
+# can reach claude in one read, which its paste detection treats as one paste with the
+# newline inside it, so the text sits in the input box unsubmitted (seen on a slow
+# --continue session with a web client attached). An unsubmitted text is cleared with
+# Ctrl-C (claude's "clear input" when the box is not empty) so the retry does not
+# append a second copy.
 deliver() {
-  local repo="$1" prompt="$2" session state
+  local repo="$1" prompt="$2" session state try
   session="$(session_name "$repo")"
   if ! tmux has-session -t "=$session" 2>/dev/null; then
     log "No live $session - launching"
@@ -126,9 +142,18 @@ deliver() {
       log "$session is busy - event waits"; return 1
     fi
   fi
-  tmux send-keys -t "=$session:" -l -- "$prompt"
-  tmux send-keys -t "=$session:" Enter
   rate_count=$((rate_count + 1))
+  tmux send-keys -t "=$session:" -l -- "$prompt"
+  sleep 0.5
+  for try in 1 2 3; do
+    tmux send-keys -t "=$session:" Enter
+    sleep 1
+    input_box_holds "$session" "$prompt" || return 0
+    log "$session did not submit the text (Enter $try of 3)"
+  done
+  log "$session still holds the text after 3 Enters - clearing the input box, event waits"
+  tmux send-keys -t "=$session:" C-c
+  return 1
 }
 
 # --- trigger 1: @mentions ----------------------------------------------------
